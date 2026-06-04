@@ -1,0 +1,21 @@
+database:
+  host: postgres
+  port: 5432
+  user: user
+  password: "1111"
+  dbname: system_monitoring
+  sslmode: disable
+
+scheduler:
+  time: "17:19 "
+
+# Telegram bot token is loaded ONLY from the TELEGRAM_BOT_TOKEN env var (or .env file).
+# Never put the token here — this file may be committed to version control.
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+
+python_parser:
+  enabled: true
+  script_path: "/app/bank_api_parser/main.py"

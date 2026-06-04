@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: system-monitoring-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: "1111"
+      POSTGRES_DB: system_monitoring
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d system_monitoring"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: system-monitoring-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: user
+      DATABASE_PASSWORD: "1111"
+      DATABASE_DB: system_monitoring
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      SCHEDULER_TIME: "${SCHEDULER_TIME:-10:00}"
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: 8080
+      MIGRATIONS_DIR: /app/migrations
+      PYTHONPATH: /app
+      # RUN_NOW: "true"   # Uncomment to parse immediately on startup
+    volumes:
+      - snapshots_data:/app/bank_api_parser/snapshots
+      - ./config.yaml:/app/config.yaml:ro
+    networks:
+      - app-network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+volumes:
+  postgres_data:
+  snapshots_data:
+
+networks:
+  app-network:
+    driver: bridge
