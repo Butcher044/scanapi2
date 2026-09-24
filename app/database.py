@@ -105,10 +105,11 @@ async def run_migrations(pool: asyncpg.Pool, migrations_dir: str = "migrations")
                 continue
 
             try:
-                await conn.execute(sql)
-                await conn.execute(
-                    "INSERT INTO schema_migrations (version) VALUES ($1)", version
-                )
+                async with conn.transaction():
+                    await conn.execute(sql)
+                    await conn.execute(
+                        "INSERT INTO schema_migrations (version) VALUES ($1)", version
+                    )
                 logger.info("Migration applied: %s", version)
             except Exception as exc:
                 logger.error("Migration failed: %s — %s", version, exc)

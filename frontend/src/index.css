@@ -1,27 +1,111 @@
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html { @apply h-full; }
-  body {
-    @apply h-full bg-black text-white antialiased;
-    font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  html {
+    @apply h-full;
+    /* The toggle swaps a data attribute on <html>; nothing else needs to react. */
+    background-color: rgb(var(--c-page));
   }
-  #root { @apply h-full; }
+
+  body {
+    @apply h-full bg-page text-ink antialiased;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  #root {
+    @apply h-full;
+  }
 
   ::selection {
-    background-color: #86efac;
-    color: #000000;
+    background-color: rgb(var(--c-brand) / 0.18);
+    color: rgb(var(--c-ink));
   }
 
-  ::-webkit-scrollbar { width: 4px; height: 4px; }
-  ::-webkit-scrollbar-track { background: #0D0D0D; }
-  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-  ::-webkit-scrollbar-thumb:hover { background: #86efac; }
+  /* One visible focus style everywhere, keyboard-only. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--c-ring));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-line-strong));
+    border: 3px solid rgb(var(--c-page));
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-ink-faint));
+  }
 }
 
 @layer utilities {
-  .no-scrollbar::-webkit-scrollbar { display: none; }
-  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Press feedback: the interface heard the click. */
+  .press {
+    transition-property: transform, opacity, background-color, border-color, color, box-shadow;
+    transition-duration: var(--dur-press);
+    transition-timing-function: var(--ease-out);
+  }
+  .press:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  /* One-off entrance for rarely seen surfaces (login card, dialogs). */
+  .enter {
+    animation: enter var(--dur-base) var(--ease-out) both;
+  }
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
+  }
+
+  /* Theme swap: cross-fade the repaint instead of letting it snap. Limited to
+     the properties that actually change, and never applied to transforms. */
+  .theme-fade,
+  .theme-fade * {
+    transition: background-color var(--dur-base) var(--ease-out),
+      border-color var(--dur-base) var(--ease-out),
+      color var(--dur-base) var(--ease-out),
+      fill var(--dur-base) var(--ease-out),
+      stroke var(--dur-base) var(--ease-out);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .press:active:not(:disabled) {
+      transform: none;
+    }
+    .enter {
+      animation: fade 200ms ease both;
+    }
+    @keyframes fade {
+      from {
+        opacity: 0;
+      }
+    }
+    .theme-fade,
+    .theme-fade * {
+      transition: none;
+    }
+  }
 }

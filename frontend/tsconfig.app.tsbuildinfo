@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/actionbadge.tsx","./src/components/bankbadge.tsx","./src/components/httpmethodbadge.tsx","./src/components/typebadge.tsx","./src/pages/banks.tsx","./src/pages/changes.tsx","./src/pages/overview.tsx"],"version":"5.9.3"}

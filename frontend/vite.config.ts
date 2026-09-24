@@ -8,7 +8,12 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:8090',
-        changeOrigin: true,
+        /* Deliberately NOT changeOrigin. The API rejects writes whose `Origin`
+           does not match `Host` (app/web_auth.py `_same_origin`), and rewriting
+           Host to the target while the browser still sends the dev-server
+           Origin makes every POST — login included — fail with 403.
+           In production the SPA is served by the same app, so there is no proxy. */
+        changeOrigin: false,
       },
     },
   },

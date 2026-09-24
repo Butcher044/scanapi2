@@ -31,3 +31,18 @@ bank_api_parser/output/
 # OS
 .DS_Store
 Thumbs.db
+
+# Coverage / lint / build caches
+.coverage
+htmlcov/
+.ruff_cache/
+*.tsbuildinfo
+
+# Agent working notes (planning-with-files) — local memory, not project docs
+task_plan.md
+findings.md
+progress.md
+
+# Caddy TLS state (production overlay keeps it in named volumes)
+caddy_data/
+caddy_config/

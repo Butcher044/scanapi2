@@ -3,6 +3,8 @@ import { ChevronRight, ChevronDown, ExternalLink, Loader2, Search } from 'lucide
 import { api } from '../api'
 import type { Service, Method } from '../types'
 import HttpMethodBadge from '../components/HttpMethodBadge'
+import JsonBlock, { hasBody } from '../components/JsonBlock'
+import { isSafeHttpUrl } from '../safeUrl'
 
 const BANKS = [
   { key: 'tbank',    label: 'Т-Банк',      color: '#fbbf24' },
@@ -10,58 +12,6 @@ const BANKS = [
   { key: 'sber',     label: 'Сбер',         color: '#86efac' },
   { key: 'tochka',   label: 'Точка',        color: '#60a5fa' },
 ]
-
-// ── JSON syntax highlighting ──────────────────────────────────────────────────
-function colorizeJson(json: string): string {
-  return json
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(
-      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
-      (m) => {
-        let cls = 'text-[#7dd3fc]'        // number / bool / null
-        if (/^"/.test(m)) {
-          cls = /:$/.test(m) ? 'text-[#86efac]' : 'text-[#fbbf24]'  // key : value
-        } else if (/true|false/.test(m)) {
-          cls = 'text-[#f472b6]'
-        } else if (/null/.test(m)) {
-          cls = 'text-[#9ca3af]'
-        }
-        return `<span class="${cls}">${m}</span>`
-      }
-    )
-}
-
-function JsonBlock({ data, label }: { data: Record<string, unknown>; label: string }) {
-  const [copied, setCopied] = useState(false)
-  if (!data || Object.keys(data).length === 0) return null
-  const text = JSON.stringify(data, null, 2)
-  const html = colorizeJson(text)
-
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
-  }
-
-  return (
-    <div className="mt-3">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] font-medium text-[#666] uppercase tracking-wider">{label}</span>
-        <button
-          onClick={copy}
-          className="text-[10px] text-[#666] hover:text-[#86efac] transition-colors px-1.5 py-0.5 rounded border border-[#333] hover:border-[#86efac]/40"
-        >
-          {copied ? '✓ скопировано' : 'копировать'}
-        </button>
-      </div>
-      <pre
-        className="rounded-xl bg-[#0a0a0a] border border-[#1F1F1F] px-4 py-3 text-[11px] font-mono overflow-x-auto max-h-72 leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    </div>
-  )
-}
 
 function MethodRow({ method }: { method: Method }) {
   const [open, setOpen] = useState(false)
@@ -87,7 +37,7 @@ function MethodRow({ method }: { method: Method }) {
             JSON
           </span>
         )}
-        {method.url && (
+        {isSafeHttpUrl(method.url) && (
           <a href={method.url} target="_blank" rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
             className="text-[#666] hover:text-[#86efac] shrink-0">
@@ -100,8 +50,8 @@ function MethodRow({ method }: { method: Method }) {
         <div className="px-4 pb-4 bg-black/30">
           {hasExamples ? (
             <>
-              <JsonBlock data={method.request_example as Record<string, unknown>} label="Пример запроса" />
-              <JsonBlock data={method.response_example as Record<string, unknown>} label="Пример ответа" />
+              <JsonBlock data={method.request_example} label="Пример запроса" />
+              <JsonBlock data={method.response_example} label="Пример ответа" />
             </>
           ) : (
             <p className="text-xs text-[#555] italic pt-2">JSON примеры недоступны</p>

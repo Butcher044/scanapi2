@@ -72,14 +72,7 @@ CREATE TABLE IF NOT EXISTS telegram_subscribers (
     subscribed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Настройки
-CREATE TABLE IF NOT EXISTS settings (
-    key VARCHAR(100) PRIMARY KEY,
-    value TEXT
-);
-
 -- +goose Down
-DROP TABLE IF EXISTS settings CASCADE;
 DROP TABLE IF EXISTS telegram_subscribers CASCADE;
 DROP TABLE IF EXISTS changes CASCADE;
 DROP TABLE IF EXISTS fields CASCADE;

@@ -1,14 +1,12 @@
 # ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.6
-aiofiles>=24.1.0
-python-multipart>=0.0.9
 
 # ── Database ──────────────────────────────────────────────────────────────────
 asyncpg>=0.29.0
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-apscheduler>=3.10.4
+apscheduler>=3.10.4,<4
 tzdata>=2024.1
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -18,9 +16,7 @@ python-telegram-bot>=21.6
 PyYAML>=6.0.1
 python-dotenv>=1.0.1
 
-# ── Parser deps (bank_api_parser) ─────────────────────────────────────────────
-playwright==1.44.0
-requests>=2.31.0
-beautifulsoup4>=4.12.3
-openpyxl>=3.1.2
+# ── Parsers ───────────────────────────────────────────────────────────────────
+requests[socks]>=2.31.0   # socks: SOCKS5 proxies (PySocks)
 urllib3>=1.26.0
+certifi>=2024.2.2

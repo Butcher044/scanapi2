@@ -1,15 +1,4 @@
-from .base_parser import APIMethod, ParseSnapshot, BaseParser
-from .tbank_parser import TBankParser
-from .tochka_parser import TochkaParser
-from .alfabank_parser import AlfaBankParser
-from .sber_parser import SberParser
+"""Bank portal parsers. Import concrete parsers from their modules (they load lazily)."""
+from .base_parser import APIMethod, BaseParser, ParserError, ParseSnapshot
 
-__all__ = [
-    "APIMethod",
-    "ParseSnapshot",
-    "BaseParser",
-    "TBankParser",
-    "TochkaParser",
-    "AlfaBankParser",
-    "SberParser",
-]
+__all__ = ["APIMethod", "BaseParser", "ParserError", "ParseSnapshot"]

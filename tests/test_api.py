@@ -1,265 +1,121 @@
-"""
-Integration tests for the FastAPI application.
-
-Requires a running PostgreSQL instance and a running app container, OR
-can be run with SKIP_INTEGRATION=1 to skip live tests.
-
-Live tests use the app already running on localhost:8090 (Docker).
-For unit tests of the API layer, we mock the DB pool.
-"""
-import os
-import sys
-import json
-from pathlib import Path
+"""In-process API tests: FastAPI TestClient with the repository layer faked (no DB)."""
+from datetime import datetime, timezone
 
 import pytest
 
-# Try to import httpx for live tests
-try:
-    import httpx
-    HAS_HTTPX = True
-except ImportError:
-    HAS_HTTPX = False
-
-SKIP = os.environ.get("SKIP_INTEGRATION", "").lower() in ("1", "true", "yes")
-BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8090")
-
-pytestmark = pytest.mark.skipif(
-    SKIP or not HAS_HTTPX,
-    reason="Integration tests skipped (set SKIP_INTEGRATION=0 and install httpx to run)"
-)
+import app.main as main
+from app.banks import BANK_KEYS
+from app.parser_runner import ParseStatus
 
 
-# ── Live API tests (require running container) ────────────────────────────────
+class _Runner:
+    def __init__(self, running=False):
+        self.status = ParseStatus(running=running)
+        self.calls = 0
 
-class TestSummaryEndpoint:
-    def test_returns_200(self):
-        r = httpx.get(f"{BASE_URL}/api/summary")
-        assert r.status_code == 200
-
-    def test_has_required_keys(self):
-        r = httpx.get(f"{BASE_URL}/api/summary").json()
-        assert "banks" in r
-        assert "total_services" in r
-        assert "total_methods" in r
-        assert "changes_today" in r
-        assert "changes_week" in r
-        assert "changes_total" in r
-
-    def test_banks_is_list(self):
-        r = httpx.get(f"{BASE_URL}/api/summary").json()
-        assert isinstance(r["banks"], list)
-
-    def test_bank_has_correct_shape(self):
-        r = httpx.get(f"{BASE_URL}/api/summary").json()
-        for bank in r["banks"]:
-            assert "name" in bank
-            assert "label" in bank
-            assert "services" in bank
-            assert "methods" in bank
-            assert isinstance(bank["methods"], int)
-            assert isinstance(bank["services"], int)
-
-    def test_no_alfa_key_only_alfabank(self):
-        """Old 'alfa' key must not appear — only 'alfabank'."""
-        r = httpx.get(f"{BASE_URL}/api/summary").json()
-        bank_names = [b["name"] for b in r["banks"]]
-        assert "alfa" not in bank_names, \
-            "Found stale 'alfa' bank key — should be 'alfabank'"
+    async def run_all(self):
+        self.calls += 1
 
 
-class TestChangesEndpoint:
-    def test_returns_200(self):
-        r = httpx.get(f"{BASE_URL}/api/changes")
-        assert r.status_code == 200
-
-    def test_has_pagination_fields(self):
-        r = httpx.get(f"{BASE_URL}/api/changes").json()
-        assert "changes" in r
-        assert "total" in r
-        assert "limit" in r
-        assert "offset" in r
-
-    def test_filter_by_bank(self):
-        r = httpx.get(f"{BASE_URL}/api/changes?bank=tbank").json()
-        for c in r["changes"]:
-            assert c["bank"] == "tbank"
-
-    def test_filter_by_type(self):
-        r = httpx.get(f"{BASE_URL}/api/changes?type=method").json()
-        for c in r["changes"]:
-            assert c["type"] == "method"
-
-    def test_filter_by_action(self):
-        r = httpx.get(f"{BASE_URL}/api/changes?action=added").json()
-        for c in r["changes"]:
-            assert c["action"] == "added"
-
-    def test_pagination_limit(self):
-        r = httpx.get(f"{BASE_URL}/api/changes?limit=5").json()
-        assert len(r["changes"]) <= 5
-
-    def test_pagination_offset(self):
-        r1 = httpx.get(f"{BASE_URL}/api/changes?limit=5&offset=0").json()
-        r2 = httpx.get(f"{BASE_URL}/api/changes?limit=5&offset=5").json()
-        ids1 = {c["id"] for c in r1["changes"]}
-        ids2 = {c["id"] for c in r2["changes"]}
-        # Pages should not overlap (assuming enough data)
-        if ids1 and ids2:
-            assert ids1.isdisjoint(ids2), "Paginated pages overlap"
-
-    def test_change_has_correct_shape(self):
-        r = httpx.get(f"{BASE_URL}/api/changes?limit=1").json()
-        if not r["changes"]:
-            pytest.skip("No changes in DB — run a parse first")
-        c = r["changes"][0]
-        required = ["id", "bank", "bank_label", "type", "action", "entity", "detected_at"]
-        for field in required:
-            assert field in c, f"Missing field: {field}"
+@pytest.fixture
+def client(monkeypatch, make_client):
+    monkeypatch.setattr(main, "_runner", _Runner())
+    return make_client("admin")
 
 
-class TestDynamicsEndpoint:
-    def test_returns_200(self):
-        r = httpx.get(f"{BASE_URL}/api/dynamics")
-        assert r.status_code == 200
-
-    def test_has_dynamics_key(self):
-        r = httpx.get(f"{BASE_URL}/api/dynamics").json()
-        assert "dynamics" in r
-        assert isinstance(r["dynamics"], list)
+def _fake(monkeypatch, name, value):
+    async def fn(*args, **kwargs):
+        return value
+    monkeypatch.setattr(main.repo, name, fn)
 
 
-class TestServicesEndpoint:
-    def test_requires_bank_param(self):
-        r = httpx.get(f"{BASE_URL}/api/services")
-        assert r.status_code in (400, 422)
-
-    def test_returns_services_for_tbank(self):
-        r = httpx.get(f"{BASE_URL}/api/services?bank=tbank")
-        assert r.status_code == 200
-        data = r.json()
-        assert "services" in data
-        assert isinstance(data["services"], list)
-
-    def test_service_has_correct_shape(self):
-        r = httpx.get(f"{BASE_URL}/api/services?bank=tbank").json()
-        if not r["services"]:
-            pytest.skip("No services for tbank")
-        s = r["services"][0]
-        assert "id" in s
-        assert "name" in s
-        assert isinstance(s["id"], int)
+def test_summary_maps_bank_labels(client, monkeypatch):
+    _fake(monkeypatch, "get_summary", {
+        "banks": [{"bank": "alfabank", "service_count": 2, "method_count": 5}],
+        "total_services": 2, "total_methods": 5,
+        "changes_today": 1, "changes_week": 3, "changes_total": 9,
+    })
+    body = client.get("/api/summary").json()
+    assert body["banks"] == [{"name": "alfabank", "label": "Альфа-Банк", "services": 2, "methods": 5}]
+    assert body["changes_total"] == 9
 
 
-class TestMethodsEndpoint:
-    def _first_service_id(self, bank="tbank"):
-        r = httpx.get(f"{BASE_URL}/api/services?bank={bank}").json()
-        if not r.get("services"):
-            return None
-        return r["services"][0]["id"]
-
-    def test_requires_service_id(self):
-        r = httpx.get(f"{BASE_URL}/api/methods")
-        assert r.status_code in (400, 422)
-
-    def test_returns_methods(self):
-        sid = self._first_service_id()
-        if sid is None:
-            pytest.skip("No services in DB")
-        r = httpx.get(f"{BASE_URL}/api/methods?service_id={sid}")
-        assert r.status_code == 200
-        data = r.json()
-        assert "methods" in data
-
-    def test_method_has_correct_shape(self):
-        sid = self._first_service_id()
-        if sid is None:
-            pytest.skip("No services in DB")
-        r = httpx.get(f"{BASE_URL}/api/methods?service_id={sid}").json()
-        if not r.get("methods"):
-            pytest.skip("No methods for service")
-        m = r["methods"][0]
-        assert "id" in m
-        assert "http_method" in m
-        assert m["http_method"] in ("GET", "POST", "PUT", "PATCH", "DELETE")
-
-    def test_no_duplicate_methods_per_service(self):
-        sid = self._first_service_id()
-        if sid is None:
-            pytest.skip("No services in DB")
-        r = httpx.get(f"{BASE_URL}/api/methods?service_id={sid}").json()
-        methods = r.get("methods", [])
-        # Key: (http_method, path) should be unique
-        keys = [(m["http_method"], m.get("path", m["name"])) for m in methods]
-        assert len(keys) == len(set(keys)), \
-            f"Duplicate methods found: {[k for k in keys if keys.count(k) > 1]}"
+def test_changes_are_formatted_in_moscow_time(client, monkeypatch):
+    row = {
+        "id": 1, "bank": "tbank", "change_type": "method", "change_action": "added",
+        "entity_name": "GET /a", "entity_path": "S / GET /a", "old_value": "", "new_value": "",
+        "url": "u", "detected_at": datetime(2026, 1, 1, 21, 30, tzinfo=timezone.utc),
+    }
+    _fake(monkeypatch, "get_changes_filtered", ([row], 1))
+    body = client.get("/api/changes?limit=10").json()
+    assert body["total"] == 1
+    assert body["changes"][0]["detected_at"] == "2026-01-02 00:30"
+    assert body["changes"][0]["bank_label"] == "Т-Банк"
 
 
-class TestParseStatusEndpoint:
-    def test_returns_200(self):
-        r = httpx.get(f"{BASE_URL}/api/parse/status")
-        assert r.status_code == 200
-
-    def test_has_required_keys(self):
-        r = httpx.get(f"{BASE_URL}/api/parse/status").json()
-        assert "running" in r
-        assert "banks" in r
-
-    def test_banks_have_status_field(self):
-        r = httpx.get(f"{BASE_URL}/api/parse/status").json()
-        for bank, status in r["banks"].items():
-            assert "status" in status
-            assert status["status"] in ("pending", "running", "done", "error")
-
-    def test_correct_bank_keys(self):
-        r = httpx.get(f"{BASE_URL}/api/parse/status").json()
-        expected = {"tbank", "tochka", "alfabank", "sber"}
-        actual = set(r["banks"].keys())
-        assert actual == expected, f"Wrong bank keys: {actual}"
+def test_changes_rejects_bad_limit(client):
+    assert client.get("/api/changes?limit=0").status_code == 422
 
 
-class TestSPAFallback:
-    def test_root_serves_html(self):
-        r = httpx.get(f"{BASE_URL}/")
-        assert r.status_code == 200
-        assert "text/html" in r.headers.get("content-type", "")
-
-    def test_spa_route_serves_html(self):
-        for path in ("/banks", "/changes"):
-            r = httpx.get(f"{BASE_URL}{path}")
-            assert r.status_code == 200
-            assert "text/html" in r.headers.get("content-type", "")
+def test_services_and_methods(client, monkeypatch):
+    _fake(monkeypatch, "get_bank_services", [{"id": 7, "name": "Счета", "url": "u"}])
+    _fake(monkeypatch, "get_service_methods", [{
+        "id": 1, "name": "List", "http_method": "GET", "path": "/a", "url": "u",
+        "request_example": {}, "response_example": {"id": "x"},
+    }])
+    assert client.get("/api/services?bank=tbank").json()["services"][0]["id"] == 7
+    assert client.get("/api/methods?service_id=7").json()["methods"][0]["response_example"] == {"id": "x"}
+    assert client.get("/api/services").status_code == 422
 
 
-# ── Unit tests (no network required) ─────────────────────────────────────────
-
-class TestAlwaysRun:
-    """These tests run always, no network or DB needed."""
-
-    def test_bank_label_mapping(self):
-        """Verify that bank label constants are correct."""
-        from app.main import _bank_label
-        assert _bank_label("tbank") == "Т-Банк"
-        assert _bank_label("alfabank") == "Альфа-Банк"
-        assert _bank_label("sber") == "Сбер"
-        assert _bank_label("tochka") == "Точка"
-        assert _bank_label("unknown") == "unknown"
-
-    def test_changes_endpoint_imports(self):
-        """FastAPI app can be imported without errors."""
-        from app.main import app
-        assert app is not None
+@pytest.mark.parametrize("path", ["/api/stats", "/api/dynamics", "/api/fields?method_id=1", "/api/nope"])
+def test_removed_and_unknown_api_routes_are_404(client, path):
+    assert client.get(path).status_code == 404
 
 
-if __name__ == "__main__":
-    if not HAS_HTTPX:
-        print("httpx not installed — run: pip install httpx")
-        sys.exit(1)
+def test_parse_starts_for_admin(client):
+    r = client.post("/api/parse")
+    assert r.status_code == 200
+    assert r.json() == {"status": "started", "banks": list(BANK_KEYS)}
 
-    print(f"Testing against: {BASE_URL}\n")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", __file__, "-v", "--tb=short"],
-        cwd=str(Path(__file__).parent.parent)
-    )
-    sys.exit(result.returncode)
+
+def test_parse_status(client):
+    body = client.get("/api/parse/status").json()
+    assert body["running"] is False
+
+
+@pytest.fixture
+def dist(tmp_path, monkeypatch):
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / "index.html").write_text("INDEX", encoding="utf-8")
+    (root / "robots.txt").write_text("ROBOTS", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("SECRET", encoding="utf-8")
+    monkeypatch.setattr(main, "_DIST", root.resolve())
+    return root
+
+
+def test_spa_serves_static_file_and_index_fallback(client, dist):
+    assert client.get("/robots.txt").text == "ROBOTS"
+    assert client.get("/banks/tbank").text == "INDEX"
+
+
+@pytest.mark.parametrize("path", ["/..%2fsecret.txt", "/%2e%2e/secret.txt", r"/..\secret.txt"])
+def test_spa_fallback_blocks_path_traversal(client, dist, path):
+    assert "SECRET" not in client.get(path).text
+
+
+def test_security_headers(client):
+    r = client.get("/api/parse/status")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "DENY"
+    csp = r.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp
+    # default-src does not cover <base>, so a dangling base tag would otherwise
+    # be free to re-point every relative URL on the page.
+    assert "base-uri 'self'" in csp
+    assert "object-src 'none'" in csp
+
+
+def test_changes_rejects_huge_offset(client):
+    assert client.get("/api/changes?offset=1000001").status_code == 422

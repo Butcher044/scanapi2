@@ -1,21 +1,28 @@
-const STYLES: Record<string, { dot: string; text: string }> = {
-  tbank:    { dot: '#fbbf24', text: 'text-[#fbbf24]' },
-  alfabank: { dot: '#f87171', text: 'text-[#f87171]' },
-  sber:     { dot: '#86efac', text: 'text-[#86efac]' },
-  tochka:   { dot: '#60a5fa', text: 'text-[#60a5fa]' },
-}
-const LABELS: Record<string, string> = {
-  tbank: 'Т-Банк', alfabank: 'Альфа-Банк', sber: 'Сбер', tochka: 'Точка',
+import { bankDotStyle, bankLabel } from '../bankMeta'
+
+type Props = {
+  bank: string
+  label?: string
+  size?: 'sm' | 'md'
 }
 
-export default function BankBadge({ bank, label, size = 'md' }: { bank: string; label?: string; size?: 'sm' | 'md' }) {
-  const s = STYLES[bank] ?? { dot: '#888', text: 'text-[#919191]' }
-  const text = label ?? LABELS[bank] ?? bank
-  const cls = size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'
+/**
+ * The chip itself stays neutral and the dot carries the bank's hue, so the name
+ * is readable at full text contrast instead of in a series color.
+ */
+export default function BankBadge({ bank, label, size = 'md' }: Props) {
+  const sizing = size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'
+
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full bg-[#1A1A1A] border border-[#333] font-medium ${cls} ${s.text}`}>
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: s.dot }} />
-      {text}
+    <span
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-line bg-raised font-medium text-ink ${sizing}`}
+    >
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 shrink-0 rounded-full"
+        style={bankDotStyle(bank)}
+      />
+      {label ?? bankLabel(bank)}
     </span>
   )
 }

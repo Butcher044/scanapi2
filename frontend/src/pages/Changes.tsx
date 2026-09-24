@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { ExternalLink, ChevronDown, ChevronLeft, ChevronRight, Loader2, Filter, ArrowUp, ArrowDown } from 'lucide-react'
 import { api } from '../api'
 import type { Change } from '../types'
+import { isSafeHttpUrl } from '../safeUrl'
 import BankBadge from '../components/BankBadge'
 import ActionBadge from '../components/ActionBadge'
 import TypeBadge from '../components/TypeBadge'
@@ -53,14 +54,20 @@ function ChangeRow({ change, isFirst }: { change: Change; isFirst: boolean }) {
           <div className="flex items-center justify-end gap-2">
             {change.action === 'added' && <ArrowUp className="h-4 w-4 text-[#86efac]" />}
             {change.action === 'removed' && <ArrowDown className="h-4 w-4 text-[#f87171]" />}
-            {change.url && (
+            {isSafeHttpUrl(change.url) && (
               <a href={change.url} target="_blank" rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}
                 className="text-[#666] hover:text-[#E7E7E7]">
                 <ExternalLink size={13} />
               </a>
             )}
-            {hasDiff && <ChevronDown size={13} className={`text-[#666] transition-transform ${open ? 'rotate-180' : ''}`} />}
+            {hasDiff && (
+              <button type="button" aria-expanded={open} aria-label="Показать изменения в полях"
+                onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+                className="text-[#666] hover:text-[#E7E7E7]">
+                <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+              </button>
+            )}
           </div>
         </td>
       </tr>
@@ -88,15 +95,24 @@ export default function Changes() {
   const [ft, setFt] = useState('')
   const [fa, setFa] = useState('')
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    const r = await api.changes({ bank: fb, type: ft, action: fa, limit: PAGE_SIZE, offset: page * PAGE_SIZE }).catch(() => ({ changes: [], total: 0, limit: PAGE_SIZE, offset: 0 }))
-    setChanges(r.changes ?? [])
-    setTotal(r.total)
-    setLoading(false)
-  }, [fb, ft, fa, page, refresh])
+  const [error, setError] = useState(false)
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let cancelled = false  // ignore responses of superseded requests (fast filter/page changes)
+    setLoading(true)
+    api.changes({ bank: fb, type: ft, action: fa, limit: PAGE_SIZE, offset: page * PAGE_SIZE })
+      .then(r => {
+        if (cancelled) return
+        const lastPage = Math.max(0, Math.ceil(r.total / PAGE_SIZE) - 1)
+        if (page > lastPage) { setPage(lastPage); return }  // list shrank (e.g. after cleanup)
+        setChanges(r.changes)
+        setTotal(r.total)
+        setError(false)
+      })
+      .catch(() => { if (!cancelled) setError(true) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [fb, ft, fa, page, refresh])
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -109,13 +125,13 @@ export default function Changes() {
             <Filter size={14} />
             <span>Фильтры</span>
           </div>
-          <select className={selClass} value={fb} onChange={e => { setPage(0); setFb(e.target.value) }}>
+          <select aria-label="Банк" className={selClass} value={fb} onChange={e => { setPage(0); setFb(e.target.value) }}>
             {BANKS.map(b => <option key={b.v} value={b.v}>{b.l}</option>)}
           </select>
-          <select className={selClass} value={ft} onChange={e => { setPage(0); setFt(e.target.value) }}>
+          <select aria-label="Тип" className={selClass} value={ft} onChange={e => { setPage(0); setFt(e.target.value) }}>
             {TYPES.map(t => <option key={t.v} value={t.v}>{t.l}</option>)}
           </select>
-          <select className={selClass} value={fa} onChange={e => { setPage(0); setFa(e.target.value) }}>
+          <select aria-label="Действие" className={selClass} value={fa} onChange={e => { setPage(0); setFa(e.target.value) }}>
             {ACTIONS.map(a => <option key={a.v} value={a.v}>{a.l}</option>)}
           </select>
           <span className="ml-auto text-xs text-[#666]">{total.toLocaleString('ru')} записей</span>
@@ -144,6 +160,10 @@ export default function Changes() {
                     <span className="text-sm">Загрузка…</span>
                   </div>
                 </td></tr>
+              ) : error ? (
+                <tr><td colSpan={6} className="py-16 text-center text-[#f87171] text-sm">
+                  Не удалось загрузить изменения
+                </td></tr>
               ) : changes.length === 0 ? (
                 <tr><td colSpan={6} className="py-16 text-center text-[#666] text-sm">
                   Нет изменений по выбранным фильтрам
@@ -160,20 +180,20 @@ export default function Changes() {
           <div className="px-5 py-4 border-t border-[#1F1F1F] flex items-center justify-between">
             <span className="text-xs text-[#666]">Страница {page + 1} из {totalPages}</span>
             <div className="flex items-center gap-1">
-              <button onClick={() => setPage(p => p - 1)} disabled={page === 0}
+              <button onClick={() => setPage(p => p - 1)} disabled={page === 0} aria-label="Предыдущая страница"
                 className="p-2 text-[#919191] hover:text-white disabled:opacity-30 hover:bg-[#1A1A1A] rounded-lg transition-colors">
                 <ChevronLeft size={15} />
               </button>
               {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
                 const p = Math.max(0, Math.min(page - 3, totalPages - 7)) + i
                 return (
-                  <button key={p} onClick={() => setPage(p)}
+                  <button key={p} onClick={() => setPage(p)} aria-current={p === page ? 'page' : undefined} aria-label={`Страница ${p + 1}`}
                     className={`w-8 h-8 rounded-lg text-xs font-medium transition-colors ${
                       p === page ? 'bg-[#86efac] text-black' : 'text-[#919191] hover:text-white hover:bg-[#1A1A1A]'
                     }`}>{p + 1}</button>
                 )
               })}
-              <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}
+              <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1} aria-label="Следующая страница"
                 className="p-2 text-[#919191] hover:text-white disabled:opacity-30 hover:bg-[#1A1A1A] rounded-lg transition-colors">
                 <ChevronRight size={15} />
               </button>

@@ -1,0 +1,67 @@
+# Production overlay — adds the public HTTPS entry point.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# The base file publishes the app only on 127.0.0.1, so on a public server this
+# overlay is what makes the dashboard reachable at all, and it is reachable only
+# over TLS.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: system-monitoring-caddy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: "${DOMAIN:?set DOMAIN in .env, e.g. scanportal-alfa-api.ru}"
+      ACME_EMAIL: "${ACME_EMAIL:?set ACME_EMAIL in .env — Let's Encrypt sends expiry warnings there}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes, so an accidental `docker compose down -v` is the only way
+      # to lose the issued certificates and hit Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      # Deliberately only this network: Caddy has no business reaching Postgres,
+      # so a compromised proxy cannot talk to the database at all.
+      edge-network:
+        # Pinned, because uvicorn trusts X-Forwarded-* only from a literal list
+        # of addresses — it cannot take a subnet — and a DHCP-assigned container
+        # IP would silently stop matching after a restart.
+        ipv4_address: "${CADDY_IP:-172.28.0.10}"
+    logging: &log-rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    # The only container on both networks: it faces Caddy on edge-network and
+    # Postgres on app-network.
+    networks:
+      edge-network:
+    environment:
+      FORWARDED_ALLOW_IPS: "${CADDY_IP:-172.28.0.10}"
+      DASHBOARD_URL: "${DASHBOARD_URL:-https://${DOMAIN}}"
+    logging: *log-rotation
+
+  postgres:
+    logging: *log-rotation
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge-network:
+    driver: bridge
+    ipam:
+      config:
+        # Change CADDY_SUBNET and CADDY_IP together in .env if this range is
+        # already taken by another network on the host (`docker network ls`).
+        - subnet: "${CADDY_SUBNET:-172.28.0.0/16}"

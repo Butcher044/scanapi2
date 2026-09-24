@@ -1,15 +1,25 @@
-const STYLES = {
-  added:    'text-[#86efac] bg-[#86efac]/10 border border-[#86efac]/20',
-  removed:  'text-[#f87171] bg-[#f87171]/10 border border-[#f87171]/20',
-  modified: 'text-[#fbbf24] bg-[#fbbf24]/10 border border-[#fbbf24]/20',
-}
-const LABELS = { added: '+ Добавлено', removed: '− Удалено', modified: '~ Изменено' }
+import type { Change } from '../types'
 
-export default function ActionBadge({ action }: { action: string }) {
-  const key = action as keyof typeof STYLES
+const STYLES: Record<Change['action'], string> = {
+  added: 'text-ok bg-ok-tint border-ok/25',
+  removed: 'text-danger bg-danger-tint border-danger/25',
+  modified: 'text-warn bg-warn-tint border-warn/25',
+}
+
+const LABELS: Record<Change['action'], string> = {
+  added: '+ Добавлено',
+  removed: '− Удалено',
+  modified: '~ Изменено',
+}
+
+export default function ActionBadge({ action }: { action: Change['action'] }) {
+  const style = STYLES[action] ?? 'text-ink-muted bg-raised border-line'
+
   return (
-    <span className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[11px] font-semibold ${STYLES[key] ?? 'text-[#919191] bg-[#1A1A1A]'}`}>
-      {LABELS[key] ?? action}
+    <span
+      className={`inline-flex items-center whitespace-nowrap rounded-lg border px-2 py-0.5 text-[11px] font-semibold ${style}`}
+    >
+      {LABELS[action] ?? action}
     </span>
   )
 }

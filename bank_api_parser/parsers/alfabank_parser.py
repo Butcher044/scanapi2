@@ -1,30 +1,35 @@
 """
 Alfa-Bank parser.
 
-Data sources (in combination):
-  1. Article scan via _next/data: fetches EVERY article page → parses YAML
-     frontmatter (mdString) → extracts method + production URL → 100% coverage
-  2. Release Notes JSON (supplement for very recent adds not yet in articles)
+  1. requests → Next.js buildId from page HTML
+  2. _next/data/{buildId}/index.json → article tree
+  3. every leaf article (fetched in parallel) → YAML frontmatter: endpoint + embedded openApi
+  4. release-notes.json → methods announced but not (yet) described in articles
 
-Strategy:
-  S0: requests → extract build hash from page HTML
-  S1: Playwright → capture _next/data XHR (gets build hash + index.json data)
-  After build hash obtained: run full article scan + release-notes supplement
-  S2: DOM fallback (text scan) if build hash is unavailable
+A partial scan is an error: a snapshot with missing articles would produce
+false "removed" changes on this run and false "added" changes on the next one.
 """
 import json
-import logging
 import re
-import time
-from datetime import datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
+import requests
 import yaml
 
-from .base_parser import APIMethod, BaseParser, ParseSnapshot
-
-logger = logging.getLogger("parser.alfabank")
+from .base_parser import (
+    HIDDEN_REASON_GHOST,
+    HIDDEN_REASON_PRIVATE,
+    HIDDEN_REASON_SUPERSEDED,
+    MAX_RESPONSE_BYTES,
+    APIMethod,
+    BaseParser,
+    ParserError,
+    ParseSnapshot,
+)
 
 PORTAL_BASE = "https://developers.alfabank.ru"
 DOC_START = (
@@ -44,8 +49,17 @@ IGNORED_ARTICLES = {
     "обзор",
 }
 
-PLAYWRIGHT_TIMEOUT = 40_000
-CONTENT_WAIT_MS = 6_000
+HTTP_VERBS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+ARTICLE_WORKERS = 8
+RETRY_WORKERS = 2
+ARTICLE_TIMEOUT = 30  # article payloads reach ~1 MB (embedded OpenAPI spec)
+MAX_REDIRECTS = 3
+_CHUNK_BYTES = 64 * 1024  # matches BaseParser._get_capped_text's chunk size
+
+# Alfa-Bank WAF blocks a full Chrome UA (returns a 6 KB JS challenge);
+# a short UA without the "Chrome/x Safari/x" suffix gets the real SSR HTML.
+ALFA_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 # Pattern for Release Notes method lines: "* POST /path - Description"
 RN_METHOD_RE = re.compile(
@@ -53,6 +67,7 @@ RN_METHOD_RE = re.compile(
     r"(?:\s*[-–—]\s*(.+))?",
     re.MULTILINE | re.I,
 )
+FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 
 
 class AlfaBankParser(BaseParser):
@@ -60,62 +75,60 @@ class AlfaBankParser(BaseParser):
         super().__init__("alfabank")
         self._build_hash: Optional[str] = None
         self._index_data: Optional[dict] = None
+        self._local = threading.local()
 
-        # Alfa-Bank WAF blocks full Chrome UA (returns 6KB JS challenge).
-        # Short UA (no "Chrome/x Safari/x" suffix) gets full 750KB SSR HTML.
-        self.session.headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
+    def _create_session(self) -> requests.Session:
+        session = super()._create_session()
+        session.headers["User-Agent"] = ALFA_USER_AGENT
+        return session
 
-    def parse(self) -> Optional[ParseSnapshot]:
+    def _thread_session(self) -> requests.Session:
+        """requests.Session is not thread-safe — one per worker thread."""
+        if not hasattr(self._local, "session"):
+            self._local.session = self._create_session()
+        return self._local.session
+
+    def parse(self) -> ParseSnapshot:
         self.logger.info("Starting Alfa-Bank parser (article scan + release notes)")
 
-        # S0: get build hash via plain requests (fast path)
         self._build_hash = self._get_build_hash_via_requests()
-        if self._build_hash:
-            self.logger.info("[Alfa S0] Build hash: %s", self._build_hash)
-
-        # S1: Playwright XHR to get index.json + optionally build hash
         if not self._build_hash:
-            self._run_playwright_capture()
+            raise ParserError("Next.js buildId not found on developers.alfabank.ru")
+        self.logger.info("[Alfa] buildId: %s", self._build_hash)
 
-        if not self._build_hash:
-            self.logger.warning("Build hash unavailable — falling back to DOM scan")
-            return self._dom_fallback()
-
-        # Fetch index.json (article tree) if not already captured
+        self._index_data = self._fetch_json(
+            f"{PORTAL_BASE}/_next/data/{self._build_hash}/index.json?productName=alfa-api"
+        )
         if not self._index_data:
-            self._index_data = self._fetch_json(
-                f"{PORTAL_BASE}/_next/data/{self._build_hash}/index.json"
-                "?productName=alfa-api"
-            )
+            raise ParserError("article index (index.json) is unavailable")
 
-        # Primary: full article scan
         services = self._strategy_article_scan()
-
-        # Supplement with release notes (adds recently-added methods not yet in articles)
-        rn_services = self._strategy_release_notes_supplement()
-        for svc, methods in rn_services.items():
-            # Normalise paths before comparing so /api/pp/v1/... == /pp/v1/...
-            existing_keys = {
-                f"{m.http_method}:{self._norm_path(m.path)}"
-                for v in services.values()
-                for m in v
-            }
-            new_methods = [
-                m for m in methods
-                if f"{m.http_method}:{self._norm_path(m.path)}" not in existing_keys
-            ]
-            if new_methods:
-                services.setdefault(svc, []).extend(new_methods)
-
         if not services:
-            self.logger.error("Alfa-Bank: no data extracted")
-            return None
+            raise ParserError("article scan returned no methods")
 
-        snap = self._make_snapshot(services)
+        merged = self._merge_release_notes(services, self._strategy_release_notes_supplement())
+        snap = self._make_snapshot(merged)
         self.logger.info("Alfa-Bank: %d services, %d methods", snap.total_services, snap.total_methods)
         return snap
+
+    def _merge_release_notes(self, services: dict, rn_services: dict) -> dict:
+        """Add release-notes methods that the article scan did not find."""
+        seen = {
+            self._method_key(m.http_method, m.path)
+            for methods in services.values() for m in methods
+        }
+        merged = dict(services)
+        added = 0
+        for svc, methods in rn_services.items():
+            new_methods = [
+                m for m in methods
+                if self._method_key(m.http_method, m.path) not in seen
+            ]
+            if new_methods:
+                merged[svc] = [*merged.get(svc, []), *new_methods]
+                added += len(new_methods)
+        self.logger.info("[Alfa RN] %d methods added from release notes", added)
+        return merged
 
     # ─── Build hash extraction ────────────────────────────────────────────
 
@@ -127,277 +140,277 @@ class AlfaBankParser(BaseParser):
           - "buildId":"..." in __NEXT_DATA__ JSON or anywhere in HTML
           - /_next/static/{buildId}/ in script src attributes
         """
-        # Try cheap URLs first, then release-notes (large but reliable)
         for url, timeout in [(DOC_START, 20), (PORTAL_BASE, 15), (RELEASE_NOTES_URL, 40)]:
             try:
-                resp = self.session.get(url, timeout=timeout)
-                if resp.status_code != 200:
-                    continue
-                html = resp.text
-
-                # Pattern 1: "buildId":"..." anywhere in HTML
-                m = re.search(r'"buildId"\s*:\s*"([^"]{10,})"', html)
-                if m:
-                    return m.group(1)
-
-                # Pattern 2: /_next/static/{buildId}/ in script sources
-                for candidate in re.findall(r'/_next/static/([^/"]{10,}?)/', html):
-                    if candidate not in ("chunks", "css", "media", "images"):
-                        return candidate
-
-                # Pattern 3: __NEXT_DATA__ script tag (Pages Router)
-                m = re.search(
-                    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>\s*(\{.+?\})\s*</script>',
-                    html, re.DOTALL,
-                )
-                if m:
-                    try:
-                        nd = json.loads(m.group(1))
-                        if nd.get("buildId"):
-                            return nd["buildId"]
-                    except Exception:
-                        pass
-
-            except Exception as exc:
-                self.logger.debug("S0 attempt failed for %s: %s", url, exc)
-
+                html_text = self._get_capped_text(url, timeout=timeout)
+            except (requests.RequestException, ParserError) as exc:
+                self.logger.warning("buildId lookup failed for %s: %s", url, exc)
+                continue
+            build_id = self._build_id_from_html(html_text)
+            if build_id:
+                return build_id
         return None
 
-    # ─── Playwright XHR capture ───────────────────────────────────────────
+    @staticmethod
+    def _build_id_from_html(html: str) -> Optional[str]:
+        m = re.search(r'"buildId"\s*:\s*"([^"]{10,})"', html)
+        if m:
+            return m.group(1)
 
-    def _run_playwright_capture(self):
-        """
-        Use Playwright to:
-        1. Extract buildId from window.__NEXT_DATA__ (always present on SSG pages)
-        2. Extract productInfoData.articles from pageProps for article tree
-        3. Capture _next/data response URLs (as fallback for build hash)
-        """
-        self.logger.info("[Alfa S1] Playwright: extracting __NEXT_DATA__")
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            self.logger.error("playwright not installed")
-            return
+        for candidate in re.findall(r'/_next/static/([^/"]{10,}?)/', html):
+            if candidate not in ("chunks", "css", "media", "images"):
+                return candidate
 
-        captured_urls: list = []
-
-        def handle_response(response):
+        m = re.search(
+            r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>\s*(\{.+?\})\s*</script>',
+            html, re.DOTALL,
+        )
+        if m:
             try:
-                url = response.url
-                if "_next/data" in url and ".json" in url:
-                    captured_urls.append(url)
-            except Exception:
-                pass
+                return json.loads(m.group(1)).get("buildId") or None
+            except ValueError:
+                return None
+        return None
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                ctx = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    locale="ru-RU",
-                )
-                page = ctx.new_page()
-                page.on("response", handle_response)
-
-                try:
-                    page.goto(DOC_START, timeout=PLAYWRIGHT_TIMEOUT, wait_until="domcontentloaded")
-                    page.wait_for_timeout(CONTENT_WAIT_MS)
-                except Exception as exc:
-                    self.logger.warning("[Alfa S1] Navigation error: %s", exc)
-
-                # Primary: extract __NEXT_DATA__ (always present on SSG pages)
-                try:
-                    next_data_raw = page.evaluate("JSON.stringify(window.__NEXT_DATA__ || null)")
-                    if next_data_raw and next_data_raw != "null":
-                        next_data = json.loads(next_data_raw)
-                        build_id = next_data.get("buildId")
-                        if build_id:
-                            self._build_hash = build_id
-                            self.logger.info("[Alfa S1] buildId from __NEXT_DATA__: %s", build_id)
-
-                        # Get article tree from pageProps if available
-                        pp = next_data.get("props", {}).get("pageProps", {})
-                        if "productInfoData" in pp:
-                            # Wrap in the expected index.json structure
-                            self._index_data = {"pageProps": pp}
-                            self.logger.info("[Alfa S1] Got productInfoData from __NEXT_DATA__")
-                except Exception as exc:
-                    self.logger.warning("[Alfa S1] __NEXT_DATA__ extract error: %s", exc)
-
-                browser.close()
-        except Exception as exc:
-            self.logger.error("[Alfa S1] Playwright error: %s", exc)
-            return
-
-        # Fallback: extract build hash from captured URL strings
-        if not self._build_hash:
-            for url in captured_urls:
-                m = re.search(r"/_next/data/([^/]{10,})/", url)
-                if m:
-                    self._build_hash = m.group(1)
-                    self.logger.info("[Alfa S1] Build hash from XHR URL: %s", self._build_hash)
-                    break
-
-        self.logger.debug("[Alfa S1] Captured %d _next/data URLs", len(captured_urls))
-
-    # ─── Article scan (primary) ───────────────────────────────────────────
+    # ─── Article scan ─────────────────────────────────────────────────────
 
     def _strategy_article_scan(self) -> dict:
-        if not self._index_data:
-            self.logger.warning("[Alfa article] No index data — skipping article scan")
-            return {}
-
         articles = (
             self._index_data.get("pageProps", {})
                             .get("productInfoData", {})
                             .get("articles", [])
         )
-        if not articles:
-            return {}
-
-        leaves = self._collect_leaf_articles(articles)
+        leaves = [
+            leaf for leaf in self._collect_leaf_articles(articles)
+            if leaf["path"] and not any(ign in leaf["title"].lower() for ign in IGNORED_ARTICLES)
+        ]
         self.logger.info("[Alfa article] %d leaf articles to scan", len(leaves))
 
+        endpoints = self._scan_all_articles(leaves)
+        services = self._methods_from_endpoints(leaves, endpoints)
+        self.logger.info(
+            "[Alfa article] Done: %d services, %d methods",
+            len(services), sum(len(v) for v in services.values()),
+        )
+        return services
+
+    def _scan_all_articles(self, leaves: list) -> list:
+        """Endpoints of every leaf; one retry pass, then any failure aborts the parse.
+
+        The retry pass is keyed by the leaf's position in `leaves`, not by
+        `leaf["path"]`: two different leaves can legitimately share the same
+        path (the same article reachable from two places in the tree), and a
+        path-keyed map would silently collapse their two results into one.
+        """
+        results = self._scan_articles(leaves, ARTICLE_WORKERS)
+        failed_indices = [i for i, eps in enumerate(results) if eps is None]
+        if not failed_indices:
+            return results
+
+        self.logger.warning("[Alfa article] retrying %d failed articles", len(failed_indices))
+        retried = dict(zip(
+            failed_indices,
+            self._scan_articles([leaves[i] for i in failed_indices], RETRY_WORKERS),
+        ))
+        merged = [retried[i] if i in retried else eps for i, eps in enumerate(results)]
+
+        still_failed = [leaves[i]["path"] for i, eps in enumerate(merged) if eps is None]
+        if still_failed:
+            raise ParserError(
+                f"{len(still_failed)} of {len(leaves)} articles could not be fetched "
+                f"(e.g. {still_failed[0]}) — partial snapshot rejected"
+            )
+        return merged
+
+    def _scan_articles(self, leaves: list, workers: int) -> list:
+        """Per leaf: its endpoints, or None when the fetch failed.
+
+        Pages (~1 MB each) are reduced to endpoints inside the worker so they
+        are not all held in memory at once.
+        """
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self._scan_article, leaves))
+
+    def _scan_article(self, leaf: dict) -> Optional[list]:
+        pp = self._fetch_article_page(self._portal_path(leaf))
+        if pp is None:
+            return None
+        try:
+            return self._endpoints_from_page_props(pp)
+        except ParserError as exc:
+            # Frontmatter present but unparsable is treated like a failed
+            # fetch: it goes through the same retry-then-abort path as a
+            # network failure (see module docstring: "a partial scan is an
+            # error"), rather than silently looking like "no endpoints".
+            self.logger.warning("Article endpoints unparsable for %s: %s", leaf["path"], exc)
+            return None
+
+    def _methods_from_endpoints(self, leaves: list, endpoints: list) -> dict:
         services: dict = {}
         seen: set = set()
-        now = datetime.utcnow().isoformat()
-        errors = 0
-
-        for leaf in leaves:
-            if any(ign in leaf["title"].lower() for ign in IGNORED_ARTICLES):
-                continue
-            if not leaf["path"]:
-                continue
-
-            portal_path = f"/products/alfa-api/documentation/{leaf['path']}"
-            pp = self._fetch_article_page(portal_path)
-
-            if not pp:
-                errors += 1
-                continue
-
-            endpoints = self._endpoints_from_page_props(pp)
-
-            for ep in endpoints:
+        now = datetime.now(timezone.utc).isoformat()
+        for leaf, eps in zip(leaves, endpoints):
+            portal_url = f"{PORTAL_BASE}{self._portal_path(leaf)}"
+            hidden, hidden_reason = self._hidden_status(leaf)
+            for ep in eps:
                 # Normalise path so /api/... and /... are treated as the same key
-                norm_key = f"{ep['method']}:{self._norm_path(ep['path'])}"
-                if norm_key in seen:
+                key = self._method_key(ep["method"], ep["path"])
+                if key in seen:
                     continue
-                seen.add(norm_key)
-
+                seen.add(key)
                 svc = leaf["service"]
                 services.setdefault(svc, []).append(APIMethod(
                     bank=self.bank_name,
                     service_name=svc,
                     http_method=ep["method"],
-                    path=ep["path"],
+                    path=self._norm_path(ep["path"]),
                     summary=leaf["title"],
                     description="",
                     response_200_fields=ep.get("fields", []),
                     parsed_at=now,
-                    url_on_portal=f"{PORTAL_BASE}{portal_path}",
+                    url_on_portal=portal_url,
                     request_example=ep.get("request_example", {}),
                     response_example=ep.get("response_example", {}),
+                    hidden=hidden,
+                    hidden_reason=hidden_reason,
                 ))
-
-            time.sleep(0.25)
-
-        self.logger.info(
-            "[Alfa article] Done: %d services, %d methods, %d errors",
-            len(services), len(seen), errors,
-        )
         return services
 
-    def _collect_leaf_articles(self, items: list, service_name: str = "") -> list:
+    @staticmethod
+    def _portal_path(leaf: dict) -> str:
+        return f"/products/alfa-api/documentation/{leaf['path']}"
+
+    def _collect_leaf_articles(
+        self, items: list, service_name: Optional[str] = None,
+        parent_title: str = "", private: bool = False,
+    ) -> list:
         """Recursively collect leaf articles.
 
-        Service name = the IMMEDIATE parent folder of a leaf article.
-        Parent categories (folders-of-folders like "Карты ФЛ") are skipped as
-        service names — only the folder that directly holds method articles
-        becomes a service (e.g. "Выпуск дебетовых карт", "Работа с картами").
+        Service name = the nearest ANCESTOR (not necessarily the immediate
+        parent) whose own `tags` include "service" — the portal's own
+        catalog-card rule (findings.md Phase 11: "карточка каталога =
+        tags.includes('service')"), so names read like the portal
+        ("Выписки по счетам ЮЛ") instead of a subheading fragment. Falls back
+        to the immediate parent folder's title when no ancestor is tagged at
+        all (older/untagged trees), so behaviour degrades gracefully rather
+        than collapsing every leaf under one name.
 
-        Fix: always pass the CURRENT node's title to children, so
-        "Карты ФЛ" → "Выпуск дебетовых карт" → leaf, not
-        "Карты ФЛ" → "Карты ФЛ" → leaf.
+        "private" (closed space of the portal) is inherited down the whole
+        subtree from ANY ancestor's own tag, mirroring the portal's own nav
+        filter `visible && !tags.includes("private")` — a service-tagged
+        folder nested inside a private one (e.g. "Короткая анкета для
+        регистрации бизнеса" under "Партнёрская программа...") is still
+        private.
         """
         leaves = []
         for item in items:
             title = item.get("title", "")
             children = item.get("articles", [])
             path = item.get("path", "").replace(".md", "")
+            tags = item.get("tags") or []
+            is_private = private or "private" in tags
+            svc = title if "service" in tags else service_name
 
             if children:
-                # Always reset service_name to the current node's title.
-                # This ensures we use the DIRECT parent, not a grandparent.
-                leaves.extend(self._collect_leaf_articles(children, title))
+                leaves.extend(self._collect_leaf_articles(children, svc, title, is_private))
             elif path:
                 leaves.append({
-                    "service": service_name or title,
+                    "service": svc or parent_title or title,
                     "title": title,
                     "path": path,
+                    "private": is_private,
+                    "visible": item.get("visible", True),
                 })
         return leaves
 
-    def _fetch_article_page(self, portal_path: str, depth: int = 0) -> dict:
-        """Fetch article page props via _next/data, following redirects."""
-        if depth > 3 or not self._build_hash:
-            return {}
+    @staticmethod
+    def _hidden_status(leaf: dict) -> tuple[bool, Optional[str]]:
+        """Why a leaf article's methods are not shown on the public dashboard.
 
-        segments = portal_path.strip("/").split("/")
-        doc_segments = segments[3:]  # after products/alfa-api/documentation
+        Checked in this order because the buckets can overlap in the raw
+        data (a superseded article can also sit in a private subtree) and
+        findings.md's audit attributes each of the 144 extra methods to
+        exactly one reason — private space wins first, since it is the
+        stronger (portal-wide, not per-article) closure.
+        """
+        if leaf.get("private"):
+            return True, HIDDEN_REASON_PRIVATE
+        if leaf.get("visible") is False:
+            return True, HIDDEN_REASON_SUPERSEDED
+        return False, None
+
+    def _fetch_article_page(self, portal_path: str, depth: int = 0) -> Optional[dict]:
+        """Article pageProps via _next/data, following redirects.
+
+        Returns {} for an article listed in the index but not published (404),
+        None when the fetch failed and should be retried.
+        """
+        if depth > MAX_REDIRECTS:
+            self.logger.warning("Too many redirects for %s", portal_path)
+            return None
+
+        doc_segments = portal_path.strip("/").split("/")[3:]  # after products/alfa-api/documentation
         params = "productName=alfa-api&" + "&".join(f"documentName={s}" for s in doc_segments)
         url = f"{PORTAL_BASE}/_next/data/{self._build_hash}{portal_path}.json?{params}"
 
         try:
-            resp = self.session.get(url, timeout=15)
-            if resp.status_code != 200:
+            text = self._capped_text_via(self._thread_session(), url, ARTICLE_TIMEOUT)
+            pp = json.loads(text).get("pageProps", {})
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self.logger.warning("Article not found (404): %s", portal_path)
                 return {}
-            data = resp.json()
-            pp = data.get("pageProps", {})
+            self.logger.warning("Article fetch failed for %s: %s", portal_path, exc)
+            return None
+        except (requests.RequestException, ParserError, ValueError) as exc:
+            self.logger.warning("Article fetch failed for %s: %s", portal_path, exc)
+            return None
 
-            if "__N_REDIRECT" in pp:
-                return self._fetch_article_page(pp["__N_REDIRECT"], depth + 1)
+        if "__N_REDIRECT" in pp:
+            return self._fetch_article_page(pp["__N_REDIRECT"], depth + 1)
+        return pp
 
-            return pp
-        except Exception as exc:
-            self.logger.debug("Article fetch error for %s: %s", portal_path, exc)
-            return {}
-
-    # ─── Path helpers ─────────────────────────────────────────────────────────
+    # ─── Path helpers ─────────────────────────────────────────────────────
 
     @staticmethod
     def _norm_path(path: str) -> str:
-        """Normalise path for deduplication.
+        """Canonical method path: deduplication key AND the stored path.
 
         The article scan gives '/api/pp/v1/...' (full production URL path).
         The release-notes supplement extracts '/pp/v1/...' (no /api prefix).
-        Strip the /api prefix so both hash to the same key.
+        Stripping /api everywhere keeps the diff key stable when a method moves
+        from release notes to a published article.
         """
         return re.sub(r"^/api(?=/)", "", path)
 
-    # ─── Endpoint + field extraction ──────────────────────────────────────────
+    @staticmethod
+    def _method_key(method: str, path: str) -> str:
+        """Dedup / lookup key shared by article-scan merging, endpoint
+        deduplication, and the release-notes merge -- one canonical form of
+        "this HTTP method + path" instead of the same f-string in three places."""
+        return f"{method}:{AlfaBankParser._norm_path(path)}"
+
+    # ─── Endpoint + field extraction ──────────────────────────────────────
 
     def _operation_from_embedded_spec(self, spec: dict, path: str, method: str) -> dict:
         """Find the operation object in the embedded OpenAPI spec.
         Handles path mismatch: production URL may start with /api/ while spec uses /.
         """
         paths = spec.get("paths", {})
-        path_item = paths.get(path)
-        if not path_item:
-            stripped = re.sub(r"^/api(?=/)", "", path)
-            path_item = paths.get(stripped)
+        path_item = paths.get(path) or paths.get(self._norm_path(path))
         if not path_item:
             for sp, item in paths.items():
                 if path.endswith(sp) or sp.endswith(path.lstrip("/")):
                     path_item = item
                     break
         if not path_item or not isinstance(path_item, dict):
+            self.logger.debug("embedded spec has no path entry for %s %s", method, path)
             return {}
-        return path_item.get(method.lower(), {})
+        operation = path_item.get(method.lower())
+        if operation is None:
+            self.logger.debug("embedded spec path %s has no %s operation", path, method)
+            return {}
+        return operation
 
     def _endpoints_from_page_props(self, pp: dict) -> list:
         """Extract {method, path, fields, request_example, response_example}.
@@ -407,201 +420,193 @@ class AlfaBankParser(BaseParser):
             - method: POST
               production: 'https://baas.alfabank.ru/api/pp/v1/debit-cards/forms'
           openApi:            ← full OpenAPI 3.x spec with schemas and examples
-            paths:
-              /pp/v1/debit-cards/forms:
-                post:
-                  requestBody: ...
-                  responses:  ...
+
+        A page can legitimately have no endpoints (no frontmatter block at
+        all, or a frontmatter block whose `endpoint:` is absent/empty — a
+        purely descriptive article). That is different from a frontmatter
+        block that IS present but that neither the YAML parser nor the regex
+        fallback can make sense of: silently returning [] there would turn a
+        real, still-published method into a phantom "removed" on this run and
+        a phantom "added" on the next (module docstring: "a partial scan is
+        an error"), so that case raises instead.
         """
+        fm_match = FRONTMATTER_RE.match(pp.get("mdString", "") or "")
+        if not fm_match:
+            return []  # no frontmatter block at all -- legitimately no endpoints
+        fm_text = fm_match.group(1)
+
+        fm = None
+        try:
+            fm = yaml.safe_load(fm_text)
+        except yaml.YAMLError as exc:
+            self.logger.warning("Frontmatter YAML is invalid, using regex fallback: %s", exc)
+
+        if isinstance(fm, dict):
+            if not fm.get("endpoint"):
+                return []  # frontmatter understood fine, article declares no endpoint
+            results = self._endpoints_from_frontmatter(fm)
+            if results:
+                return results
+
+        results = self._endpoints_from_frontmatter_text(fm_text)
+        if results:
+            return results
+
+        if isinstance(fm, dict):
+            # YAML parsed fine; `endpoint:` was present but yielded nothing
+            # usable (e.g. entries missing a method/production) -- understood,
+            # not a parse failure.
+            return []
+
+        raise ParserError(
+            "frontmatter present but could not be parsed "
+            "(neither YAML nor the regex fallback found any endpoints)"
+        )
+
+    def _endpoints_from_frontmatter(self, fm: dict) -> list:
+        spec = fm.get("openApi") or {}
         results = []
-
-        md_string = pp.get("mdString", "")
-        if md_string:
-            fm_match = re.match(r'^---\s*\n(.*?)\n---', md_string, re.DOTALL)
-            if fm_match:
-                try:
-                    fm = yaml.safe_load(fm_match.group(1))
-                    if isinstance(fm, dict):
-                        open_api_spec = fm.get("openApi", {}) or {}
-                        for ep in fm.get("endpoint", []):
-                            method = str(ep.get("method", "")).upper()
-                            production = str(ep.get("production", ""))
-                            if method in {"GET", "POST", "PUT", "PATCH", "DELETE"} and production:
-                                path = urlparse(production).path
-                                if path:
-                                    fields: list = []
-                                    req_ex: dict = {}
-                                    resp_ex: dict = {}
-                                    if open_api_spec:
-                                        op = self._operation_from_embedded_spec(
-                                            open_api_spec, path, method
-                                        )
-                                        if op:
-                                            fields = self._extract_fields_for_method(
-                                                method, op, open_api_spec
-                                            )[:50]
-                                            if method in ("POST", "PUT", "PATCH"):
-                                                req_ex = self._extract_request_example(
-                                                    op, open_api_spec
-                                                )
-                                            resp_ex = self._extract_response_example(
-                                                op, open_api_spec
-                                            )
-                                    results.append({
-                                        "method": method,
-                                        "path": path,
-                                        "fields": fields,
-                                        "request_example": req_ex,
-                                        "response_example": resp_ex,
-                                    })
-                except Exception:
-                    pass
-
-            if not results:
-                # Fallback: regex scan of frontmatter text
-                fm_re = re.search(r'^---\s*\n(.*?)\n---', md_string, re.DOTALL)
-                if fm_re:
-                    fm_text = fm_re.group(1)
-                    methods = re.findall(r'method:\s*([A-Z]+)', fm_text, re.I)
-                    prods = re.findall(
-                        r"production:\s*['\"]?(https://[^\s'\"]+)['\"]?", fm_text, re.I
-                    )
-                    for i, method in enumerate(methods):
-                        if i < len(prods) and method.upper() in {
-                            "GET", "POST", "PUT", "PATCH", "DELETE"
-                        }:
-                            path = urlparse(prods[i]).path
-                            if path:
-                                results.append({
-                                    "method": method.upper(),
-                                    "path": path,
-                                    "fields": [],
-                                })
-
+        for ep in fm.get("endpoint") or []:
+            if not isinstance(ep, dict):
+                continue
+            method = str(ep.get("method", "")).upper()
+            path = urlparse(str(ep.get("production", ""))).path
+            if method not in HTTP_VERBS or not path:
+                continue
+            op = self._operation_from_embedded_spec(spec, path, method) if isinstance(spec, dict) else {}
+            # spec_url is deliberately NOT passed to the three extractors below.
+            # Passing it would let a $ref inside an article's embedded spec
+            # resolve into an *external* sibling file (BaseParser._fetch_external_spec)
+            # from one of ARTICLE_WORKERS worker threads, through the shared,
+            # non-thread-safe `self.session` and the unlocked
+            # `self._external_spec_cache` -- a data race. Embedded specs are
+            # expected to be self-contained (local "#/..." refs only); see
+            # test_article_scan_never_fetches_external_refs.
+            results.append({
+                "method": method,
+                "path": path,
+                "fields": self._extract_fields_for_method(method, op, spec) if op else [],
+                "request_example": (
+                    self._extract_request_example(op, spec)
+                    if op and method in ("POST", "PUT", "PATCH") else {}
+                ),
+                "response_example": self._extract_response_example(op, spec) if op else {},
+            })
         return results
+
+    @staticmethod
+    def _endpoints_from_frontmatter_text(fm_text: str) -> list:
+        """Regex fallback for frontmatter that is not valid YAML."""
+        methods = re.findall(r"method:\s*([A-Z]+)", fm_text, re.I)
+        prods = re.findall(r"production:\s*['\"]?(https://[^\s'\"]+)['\"]?", fm_text, re.I)
+        return [
+            {"method": method.upper(), "path": urlparse(prod).path, "fields": []}
+            for method, prod in zip(methods, prods)
+            if method.upper() in HTTP_VERBS and urlparse(prod).path
+        ]
 
     # ─── Release notes supplement ─────────────────────────────────────────
 
     def _strategy_release_notes_supplement(self) -> dict:
-        """Fetch release-notes.json to get recently-added methods."""
-        if not self._build_hash:
-            return {}
-
+        """Methods listed in release-notes.json (recent additions)."""
         self.logger.info("[Alfa RN] Fetching release-notes supplement")
-        data = self._fetch_json(
-            f"{PORTAL_BASE}/_next/data/{self._build_hash}/release-notes.json"
-        )
+        data = self._fetch_json(f"{PORTAL_BASE}/_next/data/{self._build_hash}/release-notes.json")
         if not data:
-            return {}
+            # Skipping would make the RN-only methods flap as removed/added between runs
+            raise ParserError("release notes (release-notes.json) are unavailable")
 
         services: dict = {}
         seen: set = set()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         changes = data.get("pageProps", {}).get("content", {}).get("changes", [])
         for change in changes:
             for update in change.get("updates", []):
-                tags = update.get("tags") or []
-                content = update.get("content", "")
-                if not content:
-                    continue
-                svc = ", ".join(tags) if tags else "API"
-                if any(ign in svc.lower() for ign in IGNORED_ARTICLES):
-                    continue
-
-                for match in RN_METHOD_RE.finditer(content):
-                    verb = match.group(1).upper()
-                    path = match.group(2)
-                    desc = (match.group(3) or "").strip()
-                    # Use normalised path as key to match article-scan dedup
-                    key = f"{verb}:{self._norm_path(path)}"
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    portal_url = self._portal_url_from_content(content)
-                    services.setdefault(svc, []).append(APIMethod(
-                        bank=self.bank_name,
-                        service_name=svc,
-                        http_method=verb,
-                        path=path,
-                        summary=desc or f"{verb} {path}",
-                        description=desc,
-                        response_200_fields=[],
-                        parsed_at=now,
-                        url_on_portal=portal_url,
-                    ))
+                self._collect_rn_update_methods(update, services, seen, now)
 
         self.logger.info("[Alfa RN] %d services, %d methods", len(services), len(seen))
         return services
 
-    def _portal_url_from_content(self, content: str) -> str:
-        m = re.search(r'\[([^\]]+)\]\((/products/[^)]+)\)', content)
-        if m:
-            return f"{PORTAL_BASE}{m.group(2)}"
-        return RELEASE_NOTES_URL
+    def _collect_rn_update_methods(self, update: dict, services: dict, seen: set, now: str) -> None:
+        """Parse one release-notes update block and append any new methods it
+        describes to `services`, recording their keys in `seen`. Both are
+        shared accumulators across every update in the release-notes feed
+        (mirrors the `seen`-set dedup pattern used by `_methods_from_endpoints`),
+        so dedup works across, not just within, a single update.
+        """
+        tags = update.get("tags") or []
+        content = update.get("content", "")
+        if not content:
+            return
+        svc = ", ".join(tags) if tags else "API"
+        if any(ign in svc.lower() for ign in IGNORED_ARTICLES):
+            return
 
-    # ─── DOM fallback ─────────────────────────────────────────────────────
+        for match in RN_METHOD_RE.finditer(content):
+            verb = match.group(1).upper()
+            path = self._norm_path(match.group(2))
+            desc = (match.group(3) or "").strip()
+            key = self._method_key(verb, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            services.setdefault(svc, []).append(APIMethod(
+                bank=self.bank_name,
+                service_name=svc,
+                http_method=verb,
+                path=path,
+                summary=desc or f"{verb} {path}",
+                description=desc,
+                response_200_fields=[],
+                parsed_at=now,
+                url_on_portal=self._portal_url_from_content(content),
+                # Release notes announce changes, not necessarily live
+                # endpoints — some list dead pre-launch paths (e.g.
+                # ESOP's /jp/v1/esop/... vs the real /esop/jp/v1/...).
+                # A method only ever seen here (never in a published
+                # article) is hidden unconditionally: safer than
+                # trying to tell a real early-access method apart
+                # from a ghost (findings.md Phase 11).
+                hidden=True,
+                hidden_reason=HIDDEN_REASON_GHOST,
+            ))
 
-    def _dom_fallback(self) -> Optional[ParseSnapshot]:
-        self.logger.info("[Alfa DOM] Fallback: page text scan")
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            return None
-
-        services: dict = {}
-        seen: set = set()
-        now = datetime.utcnow().isoformat()
-        text_pattern = re.compile(
-            r"\b(GET|POST|PUT|PATCH|DELETE)\b\s+(/[A-Za-z0-9_/\-\{\}\.]{4,80})",
-            re.I,
-        )
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_context().new_page()
-                for url in [RELEASE_NOTES_URL, DOC_START]:
-                    try:
-                        page.goto(url, timeout=PLAYWRIGHT_TIMEOUT, wait_until="domcontentloaded")
-                        page.wait_for_timeout(5000)
-                        text = page.inner_text("body") or ""
-                        for verb, path in text_pattern.findall(text):
-                            key = f"{verb.upper()}:{path}"
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            svc = path.strip("/").split("/")[1].title() if "/" in path else "API"
-                            services.setdefault(svc, []).append(APIMethod(
-                                bank=self.bank_name,
-                                service_name=svc,
-                                http_method=verb.upper(),
-                                path=path,
-                                summary=f"{verb.upper()} {path}",
-                                description="",
-                                response_200_fields=[],
-                                parsed_at=now,
-                                url_on_portal=url,
-                            ))
-                    except Exception:
-                        pass
-                browser.close()
-        except Exception as exc:
-            self.logger.error("DOM fallback error: %s", exc)
-
-        if not services:
-            return None
-        snap = self._make_snapshot(services)
-        self.logger.info("Alfa-Bank DOM fallback: %d services, %d methods", snap.total_services, snap.total_methods)
-        return snap
+    @staticmethod
+    def _portal_url_from_content(content: str) -> str:
+        m = re.search(r"\[([^\]]+)\]\((/products/[^)]+)\)", content)
+        return f"{PORTAL_BASE}{m.group(2)}" if m else RELEASE_NOTES_URL
 
     # ─── Utilities ────────────────────────────────────────────────────────
 
     def _fetch_json(self, url: str) -> Optional[dict]:
+        """GET and parse a JSON document, size-capped like every other
+        download (see BaseParser._get_capped_text)."""
         try:
-            resp = self.session.get(url, timeout=20)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as exc:
-            self.logger.debug("fetch_json failed for %s: %s", url, exc)
+            text = self._get_capped_text(url, timeout=ARTICLE_TIMEOUT)
+            return json.loads(text)
+        except (requests.RequestException, ParserError, ValueError) as exc:
+            self.logger.warning("fetch_json failed for %s: %s", url, exc)
             return None
+
+    def _capped_text_via(self, session: requests.Session, url: str, timeout: int) -> str:
+        """Same size-capped, chunked download as BaseParser._get_capped_text,
+        but against an explicitly given session.
+
+        Needed (only) for calls made from worker threads: requests.Session is
+        not thread-safe, so a threaded fetch must use `self._thread_session()`,
+        not the shared `self.session` that `_get_capped_text` is hard-wired
+        to. Kept as one private method so the cap logic is not duplicated at
+        each threaded call site. Redirects are followed via
+        `BaseParser._guarded_get`, which refuses to leave the original host
+        (see its docstring) -- not duplicated here either.
+        """
+        resp = self._guarded_get(session, url, timeout)
+        resp.raise_for_status()
+        chunks: list = []
+        size = 0
+        for chunk in resp.iter_content(_CHUNK_BYTES):
+            size += len(chunk)
+            if size > MAX_RESPONSE_BYTES:
+                raise ParserError(f"{url}: response is larger than {MAX_RESPONSE_BYTES} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks).decode(self._charset_of(resp), errors="replace")

@@ -1,15 +1,19 @@
-const STYLES = {
-  service: 'text-[#60a5fa] bg-[#60a5fa]/10',
-  method:  'text-[#c084fc] bg-[#c084fc]/10',
-  field:   'text-[#fb923c] bg-[#fb923c]/10',
-}
-const LABELS = { service: 'Сервис', method: 'Метод', field: 'Поле' }
+import type { Change } from '../types'
 
-export default function TypeBadge({ type }: { type: string }) {
-  const key = type as keyof typeof STYLES
+const LABELS: Record<Change['type'], string> = {
+  service: 'Сервис',
+  method: 'Метод',
+  field: 'Поле',
+}
+
+/**
+ * Deliberately neutral. The label already names the type, and three more hues
+ * here would compete with the bank colors that do carry meaning.
+ */
+export default function TypeBadge({ type }: { type: Change['type'] }) {
   return (
-    <span className={`inline-flex items-center rounded-lg px-2 py-0.5 text-[11px] font-medium ${STYLES[key] ?? 'text-[#919191] bg-[#1A1A1A]'}`}>
-      {LABELS[key] ?? type}
+    <span className="inline-flex items-center whitespace-nowrap rounded-lg border border-line bg-raised px-2 py-0.5 text-[11px] font-medium text-ink-muted">
+      {LABELS[type] ?? type}
     </span>
   )
 }

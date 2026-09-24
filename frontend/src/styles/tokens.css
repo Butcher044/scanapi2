@@ -1,0 +1,109 @@
+/*
+ * Design tokens — Alfa-like light theme (default) + dark theme.
+ *
+ * Values are space-separated RGB channels, not hex, so Tailwind can apply
+ * opacity modifiers through `rgb(var(--token) / <alpha-value>)`. In raw CSS
+ * (SVG fills, gradients) write `rgb(var(--c-brand))`.
+ *
+ * Contrast of every ink/status token was measured with the dataviz skill's
+ * `contrast()` helper, not eyeballed. Bank series colors passed all six
+ * categorical checks in BOTH themes on the full pair list — see findings.md.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --c-page: 245 245 247;
+  --c-surface: 255 255 255;
+  --c-raised: 250 250 250;
+
+  /* Hairlines */
+  --c-line: 231 231 234;
+  --c-line-strong: 211 211 217;
+
+  /* Ink — 19.7:1 / 7.3:1 / 4.6:1 on the card surface */
+  --c-ink: 11 11 12;
+  --c-ink-muted: 85 86 92;
+  --c-ink-faint: 116 117 124;
+
+  /* Brand. `brand` is the identity red (logo, icons, fills, large text only —
+     4.09:1 on white). `brand-solid` is the filled-button step, chosen so white
+     label text clears 4.5:1 (4.80:1). */
+  --c-brand: 239 49 36;
+  --c-brand-solid: 220 41 25;
+  --c-brand-tint: 253 236 234;
+  --c-on-brand: 255 255 255;
+
+  /* Status — always shipped with an icon or a label, never color alone */
+  --c-ok: 10 125 59;
+  --c-ok-tint: 232 246 237;
+  --c-warn: 138 90 0;
+  --c-warn-tint: 251 242 227;
+  --c-danger: 192 40 26;
+  --c-danger-tint: 252 235 232;
+
+  /* Focus ring */
+  --c-ring: 239 49 36;
+
+  /* Categorical series — each bank's own brand color, identical in both themes
+     so a bank never changes color when the theme is toggled.
+
+     `-edge` is the hairline drawn around the fill. It is computed, not chosen:
+     it equals the fill wherever the fill already clears 3:1 against the
+     surface, and is stepped away from the surface where it does not. On white
+     that is only Т-Банк's yellow (1.34:1). See bankMeta.ts. */
+  --c-bank-alfabank: 239 49 36;
+  --c-bank-alfabank-edge: 239 49 36;
+  --c-bank-tbank: 255 221 45;
+  --c-bank-tbank-edge: 171 148 30;
+  --c-bank-sber: 33 160 56;
+  --c-bank-sber-edge: 33 160 56;
+  --c-bank-tochka: 108 63 209;
+  --c-bank-tochka-edge: 108 63 209;
+
+  /* Motion. The built-in CSS easings are too weak to read as intentional. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 160ms;
+  --dur-fast: 180ms;
+  --dur-base: 240ms;
+  --dur-slow: 320ms;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --c-page: 13 13 15;
+  --c-surface: 20 20 22;
+  --c-raised: 28 28 32;
+
+  --c-line: 38 38 43;
+  --c-line-strong: 53 53 60;
+
+  /* 16.9:1 / 7.9:1 / 5.0:1 on the dark card surface */
+  --c-ink: 245 245 247;
+  --c-ink-muted: 168 169 176;
+  --c-ink-faint: 131 132 140;
+
+  /* Brand lifted for the dark surface: 6.04:1 vs 4.09:1 for the light step */
+  --c-brand: 255 92 77;
+  --c-brand-solid: 220 41 25;
+  --c-brand-tint: 42 22 20;
+  --c-on-brand: 255 255 255;
+
+  --c-ok: 61 191 104;
+  --c-ok-tint: 18 41 28;
+  --c-warn: 224 160 32;
+  --c-warn-tint: 43 33 12;
+  --c-danger: 255 112 99;
+  --c-danger-tint: 45 21 19;
+
+  --c-ring: 255 92 77;
+
+  /* Series fills deliberately unchanged — see the note above. Only the
+     hairlines move: yellow reads at 13.7:1 here and needs none, while the
+     purple sits at 2.86:1 and gets a faintly lifted one. */
+  --c-bank-tbank-edge: 255 221 45;
+  --c-bank-tochka-edge: 112 69 210;
+}

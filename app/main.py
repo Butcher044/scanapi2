@@ -6,40 +6,79 @@ Startup order:
   2. Run SQL migrations
   3. Init Telegram bot (if token configured)
   4. Init parser runner
-  5. Start APScheduler
+  5. Start APScheduler (parse time from the DB, set by the admin)
   6. Serve API + React SPA
 
-All /api/* routes are handled inline here.
-Everything else is served from frontend/dist/ (React SPA).
+Every /api/* route except login/logout needs a session cookie (app.web_auth);
+parsing and settings are admin-only (app.admin_api). Everything else is served
+from frontend/dist/ (React SPA) — the SPA shows the login form itself.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import config as cfg_module
-from app import database, repository as repo
-from app.parser_runner import ParserRunner, BANK_KEYS
+from app import admin_api, benchmark_api, database, hidden_api, repository as repo, runtime_settings, web_auth
+from app.auth import Auth, LoginLimiter
+from app.banks import BANK_KEYS, bank_label
+from app.parser_runner import ParserRunner
 from app.scheduler import Scheduler
 from app.telegram_bot import TelegramBot
+from app.web_auth import require_admin
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx logs every request URL at INFO — Telegram URLs contain the bot token
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Loaded once at import time
 settings = cfg_module.load()
+
+PROXY_EXPIRY_CHECK_TIME = "09:00"   # MSK, daily admin reminder about expiring proxies
+
+
+def _build_auth() -> Auth:
+    if not settings.admin_password:
+        logger.warning("ADMIN_PASSWORD is not set: nobody can log in as admin")
+    if not settings.team_password:
+        logger.info("TEAM_PASSWORD is not set: the team (read-only) login is disabled")
+    secret = settings.session_secret.encode()
+    if not secret:
+        logger.warning("SESSION_SECRET is not set: sessions end on every restart")
+        secret = secrets.token_bytes(32)
+    return Auth({"admin": settings.admin_password, "team": settings.team_password}, secret)
+
+# Keep references to background tasks so they are not garbage-collected mid-run
+_tasks: set[asyncio.Task] = set()
+
+
+def _on_task_done(task: asyncio.Task) -> None:
+    _tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Background task %s failed", task.get_name(), exc_info=task.exception())
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _tasks.add(task)
+    task.add_done_callback(_on_task_done)
+
 
 # Global singletons (set during lifespan)
 _bot: Optional[TelegramBot] = None
@@ -57,21 +96,49 @@ async def lifespan(app: FastAPI):
     logger.info("DB migrations OK")
 
     if settings.telegram_bot_token:
-        _bot = TelegramBot(settings.telegram_bot_token, pool)
-        asyncio.create_task(_bot.start())
+        _bot = TelegramBot(
+            settings.telegram_bot_token, pool,
+            fixed_chat_id=settings.telegram_chat_id,
+            admin_chat_id=settings.telegram_admin_chat,
+            status_provider=lambda: _runner.status if _runner else None,
+        )
+        _spawn(_bot.start())
         logger.info("Telegram bot started")
     else:
         logger.info("Telegram bot disabled (no token)")
 
-    _runner = ParserRunner(pool, _bot)
+    _runner = ParserRunner(
+        pool,
+        _bot if settings.telegram_notify else None,
+        min_snapshot_ratio=settings.min_snapshot_ratio,
+        snapshots_keep=settings.snapshots_keep,
+        dashboard_url=settings.dashboard_url,
+        proxy_source=lambda: runtime_settings.proxy_rotator(
+            pool, settings.scheduler_time, datetime.now(timezone.utc)),
+    )
+    if settings.telegram_notify and not _bot:
+        logger.warning("TELEGRAM_NOTIFY=true but TELEGRAM_BOT_TOKEN is empty: nothing will be sent")
+    if settings.telegram_notify and _bot and settings.telegram_admin_chat is None:
+        logger.warning("TELEGRAM_ADMIN_CHAT is not set: parse failure alerts will only be logged")
+    logger.info("Telegram notifications %s", "enabled" if settings.telegram_notify and _bot else "disabled")
 
-    _scheduler = Scheduler(_runner, settings.scheduler_time)
+    stored = await runtime_settings.load(pool, settings.scheduler_time)
+    _scheduler = Scheduler(_runner, stored.scheduler_time)
+
+    async def _proxy_expiry_job() -> None:   # APScheduler needs a real coroutine function
+        try:
+            await runtime_settings.notify_expiring(pool, _bot, datetime.now(timezone.utc))
+        except Exception:
+            logger.exception("Proxy expiry check failed")
+
+    _scheduler.add_daily("proxy_expiry", _proxy_expiry_job, PROXY_EXPIRY_CHECK_TIME)
     _scheduler.start()
+    app.state.scheduler = _scheduler
 
     # Immediate parse if env var set
     if os.environ.get("RUN_NOW", "").lower() in ("1", "true", "yes"):
         logger.info("RUN_NOW=true — running parse immediately")
-        asyncio.create_task(_runner.run_all())
+        _spawn(_runner.run_all())
 
     yield
 
@@ -88,29 +155,53 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
     redoc_url=None,
 )
+app.state.auth = _build_auth()
+app.state.limiter = LoginLimiter()
+app.state.default_time = settings.scheduler_time
+app.state.scheduler = None
+app.include_router(web_auth.router)
+app.include_router(admin_api.router)
+app.include_router(benchmark_api.router)
+app.include_router(hidden_api.router)
+# Registered before _security_headers, so it runs inside it: 401s get the headers too.
+app.middleware("http")(web_auth.auth_middleware)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["*"],
+# SPA assets are same-origin; fonts come from Google Fonts. Swagger UI (/api/docs)
+# loads its bundle from a CDN, so it is left without CSP.
+_CSP = (
+    "default-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "object-src 'none'; "
+    # Not covered by default-src: without it a single injected <base> tag would
+    # re-point every relative URL on the page at someone else's host.
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
 )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if not request.url.path.startswith("/api/docs"):
+        response.headers["Content-Security-Policy"] = _CSP
+    return response
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-BANK_LABELS = {
-    "tbank":    "Т-Банк",
-    "alfabank": "Альфа-Банк",
-    "sber":     "Сбер",
-    "tochka":   "Точка",
-}
+MSK = ZoneInfo("Europe/Moscow")
 
 
-def _bank_label(bank: str) -> str:
-    return BANK_LABELS.get(bank, bank)
+def _fmt_msk(dt: Optional[datetime]) -> str:
+    return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M") if dt else "—"
 
 
 def _pool():
@@ -127,7 +218,7 @@ async def api_summary():
     banks = [
         {
             "name":     b["bank"],
-            "label":    _bank_label(b["bank"]),
+            "label":    bank_label(b["bank"]),
             "services": b["service_count"],
             "methods":  b["method_count"],
         }
@@ -143,25 +234,13 @@ async def api_summary():
     }
 
 
-@app.get("/api/stats")
-async def api_stats():
-    async with _pool().acquire() as conn:
-        stats = await repo.get_stats(conn)
-    banks = [
-        {"name": s["bank"], "label": _bank_label(s["bank"]),
-         "services": s["service_count"], "methods": s["method_count"]}
-        for s in stats
-    ]
-    return {"banks": banks}
-
-
 @app.get("/api/changes")
 async def api_changes(
     bank:   str = Query(""),
     type:   str = Query(""),
     action: str = Query(""),
     limit:  int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=1_000_000),
 ):
     async with _pool().acquire() as conn:
         rows, total = await repo.get_changes_filtered(
@@ -171,13 +250,10 @@ async def api_changes(
 
     changes = []
     for c in rows:
-        detected_at = c["detected_at"]
-        if detected_at:
-            detected_at = detected_at.strftime("%Y-%m-%d %H:%M")
         changes.append({
             "id":          c["id"],
             "bank":        c["bank"],
-            "bank_label":  _bank_label(c["bank"]),
+            "bank_label":  bank_label(c["bank"]),
             "type":        c["change_type"],
             "action":      c["change_action"],
             "entity":      c["entity_name"],
@@ -185,22 +261,10 @@ async def api_changes(
             "old_value":   c["old_value"],
             "new_value":   c["new_value"],
             "url":         c["url"],
-            "detected_at": detected_at or "—",
+            "detected_at": _fmt_msk(c["detected_at"]),
         })
 
     return {"changes": changes, "total": total, "limit": limit, "offset": offset}
-
-
-@app.get("/api/dynamics")
-async def api_dynamics(weeks: int = Query(12, ge=1, le=52)):
-    async with _pool().acquire() as conn:
-        rows = await repo.get_weekly_changes(conn, weeks)
-    dynamics = [
-        {"week": r["week"], "count": r["count"],
-         "bank": r["bank"], "label": _bank_label(r["bank"])}
-        for r in rows
-    ]
-    return {"dynamics": dynamics}
 
 
 @app.get("/api/services")
@@ -235,28 +299,21 @@ async def api_methods(service_id: int = Query(...)):
     }
 
 
-@app.get("/api/fields")
-async def api_fields(method_id: int = Query(...)):
-    async with _pool().acquire() as conn:
-        fields = await repo.get_fields(conn, method_id)
-    return {
-        "fields": [
-            {"id": f["id"], "name": f["name"],
-             "type": f["field_type"], "required": f["required"]}
-            for f in fields
-        ]
-    }
-
-
-@app.post("/api/parse")
+@app.post("/api/parse", dependencies=[Depends(require_admin)])
 async def api_parse_now():
     """Trigger immediate parse of all banks in the background."""
     if _runner is None:
         raise HTTPException(status_code=503, detail="Runner not ready")
     if _runner.status.running:
         return {"status": "already_running", "banks": list(BANK_KEYS)}
-    asyncio.create_task(_runner.run_all())
+    _spawn(_runner.run_all())
     return {"status": "started", "banks": list(BANK_KEYS)}
+
+
+@app.get("/api/health", include_in_schema=False)
+async def api_health():
+    """Liveness probe for the Docker healthcheck; public, reveals nothing."""
+    return {"ok": True}
 
 
 @app.get("/api/parse/status")
@@ -269,7 +326,7 @@ async def api_parse_status():
 
 # ── React SPA static serving ──────────────────────────────────────────────────
 
-_DIST = Path("frontend/dist")
+_DIST = Path("frontend/dist").resolve()
 
 if (_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
@@ -277,12 +334,12 @@ if (_DIST / "assets").exists():
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_fallback(full_path: str):
-    """Serve exact static files or fall back to index.html for SPA routing."""
-    # Try exact file match
-    candidate = _DIST / full_path
-    if candidate.exists() and candidate.is_file():
+    """Serve exact static files inside dist/ or fall back to index.html for SPA routing."""
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
+    candidate = (_DIST / full_path).resolve()
+    if candidate.is_relative_to(_DIST) and candidate.is_file():
         return FileResponse(str(candidate))
-    # SPA fallback
     index = _DIST / "index.html"
     if index.exists():
         return FileResponse(str(index))

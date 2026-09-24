@@ -1,0 +1,34 @@
+# Public entry point for the production overlay (docker-compose.prod.yml).
+#
+# Caddy terminates TLS and forwards everything to the app container. It obtains
+# and renews the certificate for {$DOMAIN} from Let's Encrypt on its own, so
+# there is no certbot and no renewal cron to forget about.
+#
+# Two details the app depends on, which is why nothing below rewrites them:
+#
+#   1. The original `Host` header survives the hop. The app rejects a write
+#      whose `Origin` does not match its `Host` (app/web_auth.py `_same_origin`),
+#      so a proxy that replaced Host with `app:8080` would make every POST —
+#      login included — fail with 403.
+#   2. Caddy sets `X-Forwarded-For` and `X-Forwarded-Proto`. uvicorn trusts them
+#      only from the addresses in FORWARDED_ALLOW_IPS, which the compose overlay
+#      pins to this container's static IP. That is what makes the login rate
+#      limiter see real client IPs and the session cookie get its Secure flag.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# Only what belongs at the TLS terminator. `header` replaces upstream values,
+		# so listing X-Content-Type-Options / X-Frame-Options / Referrer-Policy here
+		# too would silently override the app's own (stricter) ones — see the
+		# `_security_headers` middleware in app/main.py, which stays the one source.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	reverse_proxy app:8080
+}

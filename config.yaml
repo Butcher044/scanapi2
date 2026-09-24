@@ -1,21 +1,24 @@
+# Non-secret settings. Secrets (DATABASE_PASSWORD,
+# ADMIN_PASSWORD, TEAM_PASSWORD, SESSION_SECRET, TELEGRAM_BOT_TOKEN)
+# come only from environment variables / .env — see .env.example.
+# Every value here can also be overridden by an environment variable.
+
 database:
   host: postgres
   port: 5432
-  user: user
-  password: "1111"
+  user: user              # names kept for compatibility with the existing postgres volume
   dbname: system_monitoring
-  sslmode: disable
 
 scheduler:
-  time: "17:19 "
-
-# Telegram bot token is loaded ONLY from the TELEGRAM_BOT_TOKEN env var (or .env file).
-# Never put the token here — this file may be committed to version control.
+  time: "10:00"        # daily parse, HH:MM Moscow time
 
 dashboard:
   host: "0.0.0.0"
   port: 8080
 
-python_parser:
-  enabled: true
-  script_path: "/app/bank_api_parser/main.py"
+parser:
+  min_snapshot_ratio: 0.5   # reject a snapshot with < 50% of the previous method count
+  snapshots_keep: 7         # snapshots kept per bank (change history is kept forever)
+
+telegram:
+  notify: false

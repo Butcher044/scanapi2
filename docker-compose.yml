@@ -5,10 +5,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: user
-      POSTGRES_PASSWORD: "1111"
+      POSTGRES_PASSWORD: "${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}"
       POSTGRES_DB: system_monitoring
-    ports:
-      - "5433:5432"
+    # No published port: the database is reachable only from the app container.
+    # For local debugging: docker compose exec postgres psql -U user system_monitoring
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -30,22 +30,26 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8090:8080"
+      # Loopback only. On a server the dashboard is published by the production
+      # overlay through Caddy over TLS; this mapping is just for local work and
+      # for `curl` on the host. Binding 0.0.0.0 here would expose the site over
+      # plain http and let anyone bypass the reverse proxy.
+      - "127.0.0.1:8090:8080"
     environment:
       DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_USER: user
-      DATABASE_PASSWORD: "1111"
-      DATABASE_DB: system_monitoring
+      DATABASE_PASSWORD: "${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      TEAM_PASSWORD: "${TEAM_PASSWORD:-}"
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_NOTIFY: "${TELEGRAM_NOTIFY:-false}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_ADMIN_CHAT: "${TELEGRAM_ADMIN_CHAT:-}"
+      DASHBOARD_URL: "${DASHBOARD_URL:-}"
       SCHEDULER_TIME: "${SCHEDULER_TIME:-10:00}"
-      DASHBOARD_HOST: "0.0.0.0"
-      DASHBOARD_PORT: 8080
-      MIGRATIONS_DIR: /app/migrations
-      PYTHONPATH: /app
-      # RUN_NOW: "true"   # Uncomment to parse immediately on startup
+      RUN_NOW: "${RUN_NOW:-false}"
     volumes:
-      - snapshots_data:/app/bank_api_parser/snapshots
       - ./config.yaml:/app/config.yaml:ro
     networks:
       - app-network
@@ -55,7 +59,6 @@ services:
 
 volumes:
   postgres_data:
-  snapshots_data:
 
 networks:
   app-network:
