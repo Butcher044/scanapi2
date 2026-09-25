@@ -41,8 +41,13 @@ MEDUSA_PREFIX = "Безопасные сделки"
 CYCLOPS_PREFIX = "Номинальный счёт"
 CYCLOPS_PORTAL_BASE = "https://developers.tochka.com/docs/cyclops/api"
 CYCLOPS_SITE_ROOT = "https://developers.tochka.com"
-CYCLOPS_RUNTIME_JS = f"{CYCLOPS_SITE_ROOT}/assets/js/runtime~main.9ccbfd6a.js"
-CYCLOPS_MAIN_JS = f"{CYCLOPS_SITE_ROOT}/assets/js/main.a9a15284.js"
+# Имена бандлов содержат хэш сборки и меняются при каждом деплое портала (старый
+# файл после этого отдаёт 404), поэтому их берём из <script src=...> главной страницы.
+CYCLOPS_ENTRY_URL = f"{CYCLOPS_SITE_ROOT}/"
+# Только пути самого портала; атрибут в минифицированном HTML бывает и без кавычек.
+_BUNDLE_SRC_RE = r'<script[^>]*\ssrc=["\']?(/assets/js/{name}\.[0-9a-f]+\.js)["\'\s>]'
+_CYCLOPS_RUNTIME_SRC_RE = re.compile(_BUNDLE_SRC_RE.format(name=r"runtime~main"))
+_CYCLOPS_MAIN_SRC_RE = re.compile(_BUNDLE_SRC_RE.format(name=r"main"))
 
 # Потолки на чужой контент: бандлы портала — это сотни килобайт, а операция в чанке —
 # единицы килобайт. Всё, что заметно больше, означает не «портал вырос», а что читать
@@ -140,8 +145,9 @@ class TochkaParser(BaseParser):
         Any break in that chain (webpack internals are not a stable API) raises
         ParserError instead of silently producing a partial or wrong snapshot.
         """
-        name_to_chunk_hash = self._cyclops_chunk_hash_map()
-        pages = self._cyclops_pages(name_to_chunk_hash)
+        runtime_url, main_url = self._cyclops_bundle_urls()
+        name_to_chunk_hash = self._cyclops_chunk_hash_map(runtime_url)
+        pages = self._cyclops_pages(main_url, name_to_chunk_hash)
 
         if not pages:
             raise ParserError("cyclops (nominal account): no method pages found in main.js")
@@ -191,13 +197,25 @@ class TochkaParser(BaseParser):
             raise ParserError("cyclops (nominal account): 0 methods decoded — scraping is unreliable")
         return services
 
-    def _cyclops_chunk_hash_map(self) -> dict:
+    def _cyclops_bundle_urls(self) -> tuple[str, str]:
+        """(runtime_url, main_url) текущей сборки портала — те же файлы, что
+        грузит браузер с главной страницы."""
+        html = self._get_text(CYCLOPS_ENTRY_URL)
+        urls = []
+        for label, pattern in (("runtime~main", _CYCLOPS_RUNTIME_SRC_RE), ("main", _CYCLOPS_MAIN_SRC_RE)):
+            m = pattern.search(html)
+            if not m:
+                raise ParserError(f"cyclops: {label} bundle not found in {CYCLOPS_ENTRY_URL}")
+            urls.append(f"{CYCLOPS_SITE_ROOT}{m.group(1)}")
+        return urls[0], urls[1]
+
+    def _cyclops_chunk_hash_map(self, runtime_url: str) -> dict:
         """content-hash -> filename, derived from webpack's runtime chunk loader
         (`__webpack_require__.u`): two lookup objects, "name" and "content hash",
         keyed by numeric chunk id. For per-page doc chunks the "name" the portal's
         build assigns is exactly the content hash already known from main.js, so
         the caller only needs this reverse map (content hash -> filename)."""
-        runtime_js = self._get_text(CYCLOPS_RUNTIME_JS)
+        runtime_js = self._get_text(runtime_url)
         start = runtime_js.find("n.u=e=>")
         if start == -1:
             raise ParserError("cyclops: webpack chunk loader (n.u) not found in runtime bundle")
@@ -225,12 +243,12 @@ class TochkaParser(BaseParser):
             if chunk_id in hash_map
         }
 
-    def _cyclops_pages(self, chunk_filename_by_content_hash: dict) -> list:
+    def _cyclops_pages(self, main_url: str, chunk_filename_by_content_hash: dict) -> list:
         """[(slug, operation_dict_or_None)] for every /docs/cyclops/api/<slug>
         route found in main.js. `None` marks a page with no "api" field — a
         sidebar category landing page, not a method (kept out of the count, not
         treated as an error)."""
-        main_js = self._get_text(CYCLOPS_MAIN_JS)
+        main_js = self._get_text(main_url)
         matches = _CYCLOPS_ROUTE_RE.findall(main_js)
         results = []
         for _full_path, slug, content_hash in matches:

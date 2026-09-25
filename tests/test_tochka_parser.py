@@ -15,9 +15,8 @@ from bank_api_parser.parsers.base_parser import ParserError
 from bank_api_parser.parsers.tochka_parser import (
     BANK_PORTAL_BASE,
     BANK_SPEC_URL,
-    CYCLOPS_MAIN_JS,
+    CYCLOPS_ENTRY_URL,
     CYCLOPS_PORTAL_BASE,
-    CYCLOPS_RUNTIME_JS,
     CYCLOPS_SITE_ROOT,
     MEDUSA_SPEC_URL,
     PAY_GATEWAY_SPEC_URL,
@@ -166,6 +165,19 @@ def test_kebab_matches_lodash_style_slug_for_snake_case_with_digits():
 
 # ─── Cyclops (nominal account): scraped from JS chunks, no spec ───────────
 
+# Имена бандлов содержат хэш сборки и меняются при каждом деплое портала —
+# парсер обязан брать их из HTML, а не из констант. Здесь они нарочно «чужие».
+CYCLOPS_RUNTIME_JS = f"{CYCLOPS_SITE_ROOT}/assets/js/runtime~main.1fe88c01.js"
+CYCLOPS_MAIN_JS = f"{CYCLOPS_SITE_ROOT}/assets/js/main.eb043355.js"
+
+
+def _entry_html(runtime_src="/assets/js/runtime~main.1fe88c01.js", main_src="/assets/js/main.eb043355.js"):
+    """Как отдаёт реальный портал: минифицированный HTML, атрибуты без кавычек."""
+    return (
+        "<link rel=stylesheet href=/assets/css/styles.a20dbaa9.css>"
+        f"<script src={runtime_src} defer></script><script src={main_src} defer></script>"
+    )
+
 
 def _cyclops_operation():
     return {
@@ -207,6 +219,7 @@ def _main_js(routes: list) -> str:
 
 def _cyclops_happy_routes(extra=None):
     routes = {
+        CYCLOPS_ENTRY_URL: _Resp(_entry_html(), is_json=False),
         CYCLOPS_RUNTIME_JS: _Resp(_runtime_js({"1": "aaa111"}, {"1": "bbb222"}), is_json=False),
         CYCLOPS_MAIN_JS: _Resp(
             _main_js([("get-documents", "aaa111"), ("category-page", "ccc333")]), is_json=False
@@ -230,6 +243,57 @@ def test_cyclops_decodes_operation_from_compressed_chunk_payload():
     assert method.path == "/cyclops/documents"
     assert method.url_on_portal == f"{CYCLOPS_PORTAL_BASE}/get-documents"
     assert "id" in method.response_200_fields
+
+
+def test_cyclops_discovers_bundle_urls_from_entry_html_not_hardcoded_hashes():
+    """Регресс: после деплоя портала старый runtime~main.<hash>.js отдаёт 404 —
+    парсер должен идти по тем бандлам, на которые ссылается текущий HTML."""
+    parser = _parser_with_routes({**_spec_routes(), **_cyclops_happy_routes()})
+    parser._parse_cyclops()
+
+    assert parser.session.calls[:3] == [CYCLOPS_ENTRY_URL, CYCLOPS_RUNTIME_JS, CYCLOPS_MAIN_JS]
+
+
+def test_cyclops_accepts_quoted_script_src_attributes():
+    routes = _cyclops_happy_routes()
+    routes[CYCLOPS_ENTRY_URL] = _Resp(
+        '<script src="/assets/js/runtime~main.1fe88c01.js" defer></script>'
+        "<script src='/assets/js/main.eb043355.js' defer></script>",
+        is_json=False,
+    )
+    parser = _parser_with_routes({**_spec_routes(), **routes})
+
+    services = parser._parse_cyclops()
+    assert "Номинальный счёт. Документы" in services
+
+
+@pytest.mark.parametrize("html", [
+    "<html>no scripts</html>",
+    "<script src=/assets/js/main.eb043355.js defer></script>",
+    "<script src=/assets/js/runtime~main.1fe88c01.js defer></script>",
+])
+def test_cyclops_raises_when_entry_html_lacks_a_bundle(html):
+    routes = _cyclops_happy_routes()
+    routes[CYCLOPS_ENTRY_URL] = _Resp(html, is_json=False)
+    parser = _parser_with_routes({**_spec_routes(), **routes})
+
+    with pytest.raises(ParserError, match="bundle not found in"):
+        parser._parse_cyclops()
+
+
+def test_cyclops_ignores_bundles_on_other_hosts():
+    """Только пути самого портала: абсолютная ссылка на чужой хост не должна
+    превратиться в запрос туда."""
+    routes = _cyclops_happy_routes()
+    routes[CYCLOPS_ENTRY_URL] = _Resp(
+        _entry_html(runtime_src="https://evil.example/assets/js/runtime~main.1fe88c01.js"),
+        is_json=False,
+    )
+    parser = _parser_with_routes({**_spec_routes(), **routes})
+
+    with pytest.raises(ParserError, match="bundle not found in"):
+        parser._parse_cyclops()
+    assert all(not c.startswith("https://evil.example") for c in parser.session.calls)
 
 
 def test_cyclops_skips_pages_with_no_matching_chunk_as_category_pages():
