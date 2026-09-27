@@ -19,13 +19,13 @@ export default function CellDetails({ cell, isAdmin, saving, onOverride }: Props
   return (
     <div className="flex flex-col gap-2 min-w-0">
       {cell.evidence.length === 0 ? (
-        <span className="text-xs text-[#666]">Совпадений нет</span>
+        <span className="text-xs text-ink-faint">Совпадений нет</span>
       ) : (
         <ul className="flex flex-col gap-1">
           {cell.evidence.map(e => (
             <li key={e.service} className="flex flex-col text-xs leading-snug">
-              <span className="text-[#E7E7E7] break-words">{e.service}</span>
-              <span className="text-[#666]">
+              <span className="text-ink break-words">{e.service}</span>
+              <span className="text-ink-faint">
                 {methodsText(e.matched, e.total, e.by_name)}{e.by_name ? ' · по названию' : ''}
               </span>
             </li>

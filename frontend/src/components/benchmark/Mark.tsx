@@ -8,11 +8,11 @@ export default function Mark({ cell }: { cell: BenchmarkCell }) {
   return (
     <span className="relative inline-flex items-center justify-center w-7 h-7" aria-label={label} title={label}>
       {cell.present
-        ? <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#86efac]/15 text-[#86efac]">
+        ? <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-ok-tint text-ok">
             <Check size={15} strokeWidth={2.75} />
           </span>
-        : <Minus size={15} className="text-[#4A4A4A]" />}
-      {manual && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-[#fbbf24]" />}
+        : <Minus size={15} className="text-ink-faint" />}
+      {manual && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-warn" />}
     </span>
   )
 }

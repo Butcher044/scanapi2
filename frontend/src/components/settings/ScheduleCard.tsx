@@ -21,7 +21,7 @@ export default function ScheduleCard({ settings, saving, onSave }: Props) {
         onSubmit={e => { e.preventDefault(); if (changed) onSave(time) }}
       >
         <label className="flex flex-col gap-2">
-          <span className="text-xs text-[#919191]">Каждый день в (МСК)</span>
+          <span className="text-xs text-ink-muted">Каждый день в (МСК)</span>
           <input type="time" required disabled={saving} value={time} onChange={e => setTime(e.target.value)} className={inputClass} />
         </label>
         <button type="submit" disabled={!changed || saving} className={primaryButton}>
@@ -29,9 +29,9 @@ export default function ScheduleCard({ settings, saving, onSave }: Props) {
           Сохранить
         </button>
       </form>
-      <p className="flex items-center gap-2 text-xs text-[#919191]">
+      <p className="flex items-center gap-2 text-xs text-ink-muted">
         <Clock size={13} />
-        Следующий запуск: <span className="text-[#E7E7E7]">{settings.next_run ?? '—'}</span>
+        Следующий запуск: <span className="text-ink">{settings.next_run ?? '—'}</span>
       </p>
     </Card>
   )

@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { BANK_COLORS } from '../../bankMeta'
+import { bankDotStyle } from '../../bankMeta'
 import { cellId } from '../../hooks/useBenchmark'
 import type { BenchmarkBank, BenchmarkRow } from '../../types'
 import CellDetails from './CellDetails'
@@ -31,17 +31,17 @@ export default function BenchmarkTable({
       <table className="w-full min-w-[640px] border-separate border-spacing-0 text-sm">
         <thead>
           <tr>
-            <th scope="col" className="text-left font-medium text-xs tracking-widest text-[#919191] pb-4 pr-4">
+            <th scope="col" className="text-left font-medium text-xs tracking-widest text-ink-muted pb-4 pr-4">
               ВОЗМОЖНОСТЬ
             </th>
             {banks.map(b => (
               <th key={b.key} scope="col" className="pb-4 px-2 w-[18%] font-medium align-bottom">
                 <div className="flex flex-col items-center gap-1">
-                  <span className="flex items-center gap-2 text-[#E7E7E7]">
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: BANK_COLORS[b.key] }} />
+                  <span className="flex items-center gap-2 text-ink">
+                    <span className="w-2 h-2 rounded-full" style={bankDotStyle(b.key)} />
                     {b.label}
                   </span>
-                  <span className="text-[11px] text-[#666] tabular-nums">
+                  <span className="text-[11px] text-ink-faint tabular-nums">
                     {b.snapshot_at ? `${totals[b.key] ?? 0} из ${groups.reduce((n, g) => n + g.rows.length, 0)}` : 'нет данных'}
                   </span>
                 </div>
@@ -54,7 +54,7 @@ export default function BenchmarkTable({
             <Fragment key={group.title}>
               <tr>
                 <th colSpan={columns} scope="colgroup"
-                  className="text-left text-[11px] font-semibold tracking-widest uppercase text-[#666] pt-5 pb-2 border-b border-[#1F1F1F]">
+                  className="text-left text-[11px] font-semibold tracking-widest uppercase text-ink-faint pt-5 pb-2 border-b border-line">
                   {group.title}
                 </th>
               </tr>
@@ -62,31 +62,31 @@ export default function BenchmarkTable({
                 const open = expanded.has(row.key)
                 return (
                   <Fragment key={row.key}>
-                    <tr className={`group cursor-pointer ${open ? 'bg-[#141414]' : 'hover:bg-[#121212]'}`}
+                    <tr className={`group cursor-pointer ${open ? 'bg-raised' : 'hover:bg-raised'}`}
                       onClick={() => onToggle(row.key)}>
-                      <td className="py-2 pr-4 border-b border-[#1A1A1A]">
+                      <td className="py-2 pr-4 border-b border-line">
                         <button
                           type="button"
                           aria-expanded={open}
                           onClick={e => { e.stopPropagation(); onToggle(row.key) }}
-                          className="flex items-center gap-2 text-left text-[#E7E7E7] outline-none focus-visible:text-[#86efac]"
+                          className="flex items-center gap-2 text-left text-ink outline-none rounded focus-visible:ring-2 focus-visible:ring-brand/40"
                         >
                           <ChevronRight size={14}
-                            className={`shrink-0 text-[#666] transition-transform duration-150 ease-out ${open ? 'rotate-90' : ''}`} />
+                            className={`shrink-0 text-ink-faint transition-transform duration-150 ease-out ${open ? 'rotate-90' : ''}`} />
                           {row.title}
                         </button>
                       </td>
                       {banks.map(b => (
-                        <td key={b.key} className="py-2 px-2 text-center border-b border-[#1A1A1A]">
+                        <td key={b.key} className="py-2 px-2 text-center border-b border-line">
                           <Mark cell={row.cells[b.key]} />
                         </td>
                       ))}
                     </tr>
                     {open && (
-                      <tr className="bg-[#141414]">
-                        <td className="border-b border-[#1A1A1A]" />
+                      <tr className="bg-raised">
+                        <td className="border-b border-line" />
                         {banks.map(b => (
-                          <td key={b.key} className="align-top px-2 pt-1 pb-4 border-b border-[#1A1A1A]">
+                          <td key={b.key} className="align-top px-2 pt-1 pb-4 border-b border-line">
                             <CellDetails
                               cell={row.cells[b.key]}
                               isAdmin={isAdmin}

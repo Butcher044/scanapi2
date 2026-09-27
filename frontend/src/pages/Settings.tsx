@@ -7,13 +7,13 @@ import ProxyList from '../components/settings/ProxyList'
 import { ghostButton } from '../components/settings/Card'
 
 function ErrorLine({ text }: { text: string | null }) {
-  return text ? <p role="alert" className="text-sm text-[#f87171]">{text}</p> : null
+  return text ? <p role="alert" className="text-sm text-danger">{text}</p> : null
 }
 
 /** Placeholder for a section whose data is not loaded yet: spinner, or the error with a retry. */
 function Pending({ error, onRetry }: { error: string | null; onRetry: () => void }) {
   if (!error) {
-    return <div className="flex justify-center py-12"><Loader2 className="animate-spin text-[#86efac]" /></div>
+    return <div className="flex justify-center py-12"><Loader2 className="animate-spin text-ok" /></div>
   }
   return (
     <div className="flex items-center gap-3 flex-wrap">

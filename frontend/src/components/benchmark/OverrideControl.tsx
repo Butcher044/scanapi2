@@ -16,7 +16,7 @@ interface Props {
 export default function OverrideControl({ cell, saving, onChange }: Props) {
   return (
     <div role="group" aria-label="Значение ячейки" aria-busy={saving}
-      className="inline-flex p-0.5 bg-black border border-[#333] rounded-lg">
+      className="inline-flex p-0.5 bg-raised border border-line rounded-lg">
       {OPTIONS.map(({ value, label }) => {
         const active = cell.override === value
         return (
@@ -27,7 +27,7 @@ export default function OverrideControl({ cell, saving, onChange }: Props) {
             disabled={saving}
             onClick={() => { if (!active) onChange(value) }}
             className={`press px-2 py-0.5 rounded-md text-[11px] disabled:opacity-50 ${
-              active ? 'bg-[#262626] text-[#E7E7E7]' : 'text-[#919191] hover:text-[#E7E7E7]'
+              active ? 'bg-surface text-ink shadow-card' : 'text-ink-muted hover:text-ink'
             }`}
           >
             {value === null ? `${label} (${cell.auto ? '+' : '−'})` : label}

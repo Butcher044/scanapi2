@@ -13,9 +13,9 @@ function HiddenBankView({ bank }: { bank: string }) {
   return (
     <div>
       <div className="relative mb-4">
-        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#666]" />
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
         <input
-          className="w-full bg-[#1A1A1A] border border-[#333] rounded-xl pl-9 pr-4 py-2.5 text-sm text-[#E7E7E7] placeholder-[#666] focus:outline-none focus:border-[#86efac]/50 transition-colors"
+          className="w-full bg-surface border border-line rounded-xl pl-9 pr-4 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-line-strong transition-colors"
           placeholder="Поиск скрытых сервисов…"
           aria-label="Поиск скрытых сервисов"
           value={search}
@@ -23,19 +23,19 @@ function HiddenBankView({ bank }: { bank: string }) {
         />
       </div>
       {loading ? (
-        <div className="flex items-center justify-center py-16 gap-2 text-[#919191]">
+        <div className="flex items-center justify-center py-16 gap-2 text-ink-muted">
           <Loader2 size={18} className="animate-spin" />
           <span className="text-sm">Загрузка…</span>
         </div>
       ) : error ? (
-        <div role="alert" className="text-center py-16 text-[#f87171] text-sm">{error}</div>
+        <div role="alert" className="text-center py-16 text-danger text-sm">{error}</div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-[#666] text-sm">
+        <div className="text-center py-16 text-ink-faint text-sm">
           {services?.length === 0 ? 'скрытых сервисов нет' : 'Ничего не найдено'}
         </div>
       ) : (
         <>
-          <p className="text-xs text-[#666] mb-3">{filtered.length} сервисов</p>
+          <p className="text-xs text-ink-faint mb-3">{filtered.length} сервисов</p>
           {filtered.map(s => <HiddenServiceRow key={s.id} service={s} />)}
         </>
       )}
@@ -61,28 +61,28 @@ export default function HiddenServices() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center gap-3">
-        <EyeOff className="h-5 w-5 text-[#919191]" />
+        <EyeOff className="h-5 w-5 text-ink-muted" />
         <h1 className="text-2xl font-bold tracking-wide">Скрытые сервисы</h1>
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-16 gap-2 text-[#919191]">
+        <div className="flex items-center justify-center py-16 gap-2 text-ink-muted">
           <Loader2 size={18} className="animate-spin" />
           <span className="text-sm">Загрузка…</span>
         </div>
       ) : error ? (
-        <div className="flex items-center gap-3 flex-wrap px-5 py-3 bg-[#0D0D0D] border border-[#f87171]/40 rounded-2xl">
-          <span role="alert" className="text-sm text-[#f87171]">{error}</span>
+        <div className="flex items-center gap-3 flex-wrap px-5 py-3 bg-surface border border-danger/25 rounded-2xl">
+          <span role="alert" className="text-sm text-danger">{error}</span>
           <button
             type="button"
             onClick={reload}
-            className="press flex items-center gap-2 px-3 py-1.5 border border-[#333] rounded-xl text-xs text-[#E7E7E7] hover:border-[#86efac]/40"
+            className="press flex items-center gap-2 px-3 py-1.5 border border-line-strong rounded-xl text-xs text-ink hover:border-line-strong"
           >
             <RotateCw size={12} /> Повторить
           </button>
         </div>
       ) : !summary || summary.banks.length === 0 ? (
-        <div className="text-center py-16 text-[#666] text-sm bg-[#0D0D0D] rounded-2xl">скрытых сервисов нет</div>
+        <div className="text-center py-16 text-ink-faint text-sm border border-line bg-surface shadow-card rounded-2xl">скрытых сервисов нет</div>
       ) : (
         <>
           {/* Per-bank summary cards */}
@@ -99,11 +99,11 @@ export default function HiddenServices() {
 
           {/* Selected bank's hidden services → methods */}
           {activeBank && (
-            <div className="bg-[#0D0D0D] rounded-2xl p-6">
+            <div className="border border-line bg-surface shadow-card rounded-2xl p-6">
               <div className="flex items-center gap-3 mb-5">
-                <h2 className="text-xl font-medium text-white">Скрытые API сервисы</h2>
-                <div className="flex items-center gap-2 px-3 py-1 bg-[#1A1A1A] rounded-full border border-[#333]">
-                  <span className="text-xs font-medium text-white">{activeBank.label}</span>
+                <h2 className="text-xl font-medium text-ink">Скрытые API сервисы</h2>
+                <div className="flex items-center gap-2 px-3 py-1 bg-raised rounded-full border border-line-strong">
+                  <span className="text-xs font-medium text-ink">{activeBank.label}</span>
                 </div>
               </div>
               <HiddenBankView key={activeBank.name} bank={activeBank.name} />

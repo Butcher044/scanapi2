@@ -43,6 +43,15 @@
   --c-danger: 192 40 26;
   --c-danger-tint: 252 235 232;
 
+  /* Extra hues for labels that need to tell several kinds apart (HTTP verbs,
+     hidden-method reasons, JSON syntax). Text step clears 4.5:1 on its tint. */
+  --c-info: 29 99 199;
+  --c-info-tint: 232 240 252;
+  --c-orange: 176 72 8;
+  --c-orange-tint: 253 239 227;
+  --c-violet: 118 56 214;
+  --c-violet-tint: 242 236 253;
+
   /* Focus ring */
   --c-ring: 239 49 36;
 
@@ -98,6 +107,13 @@
   --c-warn-tint: 43 33 12;
   --c-danger: 255 112 99;
   --c-danger-tint: 45 21 19;
+
+  --c-info: 96 165 250;
+  --c-info-tint: 17 30 48;
+  --c-orange: 251 146 60;
+  --c-orange-tint: 45 28 14;
+  --c-violet: 192 132 252;
+  --c-violet-tint: 33 22 48;
 
   --c-ring: 255 92 77;
 

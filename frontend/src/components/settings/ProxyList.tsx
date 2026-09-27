@@ -26,7 +26,7 @@ export default function ProxyList({ proxies, checking, deleting, checkingAll, on
   return (
     <Card title={`ПРОКСИ · ${proxies.length}`} action={checkAllButton}>
       {proxies.length === 0 ? (
-        <p className="text-sm text-[#666]">Список пуст. Добавьте первый прокси ниже.</p>
+        <p className="text-sm text-ink-faint">Список пуст. Добавьте первый прокси ниже.</p>
       ) : (
         <ul>
           {proxies.map(p => (

@@ -19,13 +19,13 @@ export const HIDDEN_REASONS: HiddenReasonInfo[] = [
 ]
 
 const STYLES: Record<HiddenReason, string> = {
-  private: 'text-[#f87171] bg-[#f87171]/10',
-  superseded: 'text-[#fbbf24] bg-[#fbbf24]/10',
-  not_in_menu: 'text-[#c084fc] bg-[#c084fc]/10',
-  ghost: 'text-[#919191] bg-[#1A1A1A]',
+  private: 'text-danger bg-danger-tint',
+  superseded: 'text-warn bg-warn-tint',
+  not_in_menu: 'text-violet bg-violet-tint',
+  ghost: 'text-ink-muted bg-raised',
 }
 
-const FALLBACK_STYLE = 'text-[#919191] bg-[#1A1A1A]'
+const FALLBACK_STYLE = 'text-ink-muted bg-raised'
 const FALLBACK_DESCRIPTION = 'Причина скрытия неизвестна'
 
 export default function HiddenReasonBadge({ reason }: { reason: string }) {

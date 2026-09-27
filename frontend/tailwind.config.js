@@ -40,6 +40,18 @@ export default {
           DEFAULT: token('danger'),
           tint: token('danger-tint'),
         },
+        info: {
+          DEFAULT: token('info'),
+          tint: token('info-tint'),
+        },
+        orange: {
+          DEFAULT: token('orange'),
+          tint: token('orange-tint'),
+        },
+        violet: {
+          DEFAULT: token('violet'),
+          tint: token('violet-tint'),
+        },
         bank: {
           alfabank: token('bank-alfabank'),
           tbank: token('bank-tbank'),

@@ -53,17 +53,17 @@ export default function AddProxyForm({ onAdd }: { onAdd: (proxy: NewProxy) => Pr
       type="button"
       aria-pressed={mode === value}
       onClick={() => setMode(value)}
-      className={`press px-3 py-1.5 rounded-lg text-xs ${mode === value ? 'bg-[#1F1F1F] text-white' : 'text-[#919191] hover:text-[#E7E7E7]'}`}
+      className={`press px-3 py-1.5 rounded-lg text-xs ${mode === value ? 'bg-surface text-ink shadow-card' : 'text-ink-muted hover:text-ink'}`}
     >
       {text}
     </button>
   )
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3 pt-5 border-t border-[#1F1F1F]">
+    <form onSubmit={submit} className="flex flex-col gap-3 pt-5 border-t border-line">
       <div className="flex gap-3 flex-wrap items-end">
         <label className="flex flex-col gap-2 flex-[2_1_18rem]">
-          <span className="text-xs text-[#919191]">Адрес (http:// или socks5://)</span>
+          <span className="text-xs text-ink-muted">Адрес (http:// или socks5://)</span>
           <input
             required
             value={url}
@@ -76,16 +76,16 @@ export default function AddProxyForm({ onAdd }: { onAdd: (proxy: NewProxy) => Pr
           />
         </label>
         <label className="flex flex-col gap-2 flex-[1_1_10rem]">
-          <span className="text-xs text-[#919191]">Метка</span>
+          <span className="text-xs text-ink-muted">Метка</span>
           <input value={label} maxLength={100} placeholder="необязательно" onChange={e => setLabel(e.target.value)} className={inputClass} />
         </label>
       </div>
 
       <div className="flex gap-3 flex-wrap items-end">
         <div className="flex flex-col gap-2">
-          <span className="text-xs text-[#919191]">Срок действия</span>
+          <span className="text-xs text-ink-muted">Срок действия</span>
           <div className="flex items-center gap-2">
-            <div className="flex p-1 bg-black border border-[#333] rounded-xl" role="group" aria-label="Как указать срок">
+            <div className="flex p-1 bg-raised border border-line rounded-xl" role="group" aria-label="Как указать срок">
               {modeButton('days', 'Дней')}
               {modeButton('date', 'До даты')}
             </div>
@@ -112,7 +112,7 @@ export default function AddProxyForm({ onAdd }: { onAdd: (proxy: NewProxy) => Pr
         </button>
       </div>
 
-      {error && <p role="alert" className="text-xs text-[#f87171]">{error}</p>}
+      {error && <p role="alert" className="text-xs text-danger">{error}</p>}
     </form>
   )
 }

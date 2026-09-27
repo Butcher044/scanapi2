@@ -25,13 +25,13 @@ export function colorizeJson(json: string): string {
     .replace(
       /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
       (m) => {
-        let cls = 'text-[#7dd3fc]'        // number / bool / null
+        let cls = 'text-info'        // number
         if (/^"/.test(m)) {
-          cls = /:$/.test(m) ? 'text-[#86efac]' : 'text-[#fbbf24]'  // key : value
+          cls = /:$/.test(m) ? 'text-ok' : 'text-warn'  // key : value
         } else if (/true|false/.test(m)) {
-          cls = 'text-[#f472b6]'
+          cls = 'text-violet'
         } else if (/null/.test(m)) {
-          cls = 'text-[#9ca3af]'
+          cls = 'text-ink-faint'
         }
         return `<span class="${cls}">${m}</span>`
       }
@@ -56,17 +56,17 @@ export default function JsonBlock({ data, label }: { data: unknown; label: strin
   return (
     <div className="mt-3">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] font-medium text-[#666] uppercase tracking-wider">{label}</span>
+        <span className="text-[10px] font-medium text-ink-faint uppercase tracking-wider">{label}</span>
         <button
           type="button"
           onClick={copy}
-          className="text-[10px] text-[#666] hover:text-[#86efac] transition-colors px-1.5 py-0.5 rounded border border-[#333] hover:border-[#86efac]/40"
+          className="text-[10px] text-ink-faint hover:text-ink transition-colors px-1.5 py-0.5 rounded border border-line hover:border-line-strong"
         >
           {copied ? '✓ скопировано' : 'копировать'}
         </button>
       </div>
       <pre
-        className="rounded-xl bg-[#0a0a0a] border border-[#1F1F1F] px-4 py-3 text-[11px] font-mono overflow-x-auto max-h-72 leading-relaxed"
+        className="rounded-xl bg-page border border-line px-4 py-3 text-[11px] font-mono overflow-x-auto max-h-72 leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>

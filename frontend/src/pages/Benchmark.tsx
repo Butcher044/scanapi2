@@ -48,20 +48,20 @@ export default function Benchmark() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-wide">Бенчмарк</h1>
-          <p className="text-sm text-[#919191]">
+          <p className="text-sm text-ink-muted">
             Какие возможности есть в API каждого банка. Нажмите на строку, чтобы увидеть, какие сервисы дали «+».
           </p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-[#919191] cursor-pointer select-none">
+        <label className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer select-none">
           <input type="checkbox" checked={onlyDiff} onChange={e => setOnlyDiff(e.target.checked)}
-            className="accent-[#86efac] w-3.5 h-3.5" />
+            className="accent-[rgb(var(--c-brand-solid))] w-3.5 h-3.5" />
           Только различия
         </label>
       </div>
 
       {error && (
         <div className="flex items-center gap-3 flex-wrap">
-          <p role="alert" className="text-sm text-[#f87171]">{error}</p>
+          <p role="alert" className="text-sm text-danger">{error}</p>
           {!data && (
             <button type="button" className={ghostButton} onClick={reload}>
               <RefreshCw size={12} /> Повторить
@@ -85,11 +85,11 @@ export default function Benchmark() {
                 onOverride={onOverride}
               />
             ) : (
-              <p className="text-sm text-[#919191]">Различий нет — у всех банков одинаковый набор.</p>
+              <p className="text-sm text-ink-muted">Различий нет — у всех банков одинаковый набор.</p>
             )}
             {isAdmin && (
-              <p className="text-xs text-[#666]">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#fbbf24] mr-1.5 align-middle" />
+              <p className="text-xs text-ink-faint">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-warn mr-1.5 align-middle" />
                 значение выставлено вручную. Править ячейку — в раскрытой строке.
               </p>
             )}
@@ -97,7 +97,7 @@ export default function Benchmark() {
           <UnmatchedCard banks={data.banks} unmatched={data.unmatched} />
         </>
       ) : !error && (
-        <div className="flex justify-center py-12"><Loader2 className="animate-spin text-[#86efac]" /></div>
+        <div className="flex justify-center py-12"><Loader2 className="animate-spin text-ok" /></div>
       )}
     </div>
   )
