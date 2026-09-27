@@ -3,6 +3,7 @@ import {
   EyeOff,
   GitCompare,
   LayoutDashboard,
+  ScrollText,
   Settings as SettingsIcon,
   Table2,
   type LucideIcon,
@@ -24,6 +25,7 @@ const BASE_NAV: readonly NavItem[] = [
 
 const ADMIN_NAV: readonly NavItem[] = [
   { to: '/hidden', icon: EyeOff, label: 'Скрытые сервисы' },
+  { to: '/logs', icon: ScrollText, label: 'Логи' },
   { to: '/settings', icon: SettingsIcon, label: 'Настройки' },
 ]
 

@@ -17,7 +17,7 @@ def test_parse_time_rejects(text):
 
 
 class _Runner:
-    async def run_all(self):
+    async def run_all(self, **kwargs):
         pass
 
 
@@ -32,3 +32,28 @@ def test_reschedule_changes_next_run():
 
 def test_bad_initial_time_falls_back_to_default():
     assert Scheduler(_Runner(), "nonsense").time == "10:00"
+
+
+def test_scheduled_run_is_logged_and_tagged(events):
+    import asyncio
+    calls = []
+
+    class Runner:
+        async def run_all(self, *, trigger="manual"):
+            calls.append(trigger)
+    sched = Scheduler(Runner(), "09:15", events=events)
+    asyncio.run(sched._run())
+    assert calls == ["schedule"]
+    [e] = events.find("Сработал плановый запуск")
+    assert e.category == "schedule" and "09:15" in e.message
+
+
+def test_scheduled_run_crash_is_an_error_event(events):
+    import asyncio
+
+    class Runner:
+        async def run_all(self, *, trigger="manual"):
+            raise RuntimeError("boom")
+    asyncio.run(Scheduler(Runner(), "09:15", events=events)._run())
+    [e] = events.find("Плановый запуск", "error")
+    assert "boom" in e.details

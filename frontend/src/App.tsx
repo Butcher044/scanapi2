@@ -20,6 +20,7 @@ const Changes = lazy(() => import('./pages/Changes'))
 const Benchmark = lazy(() => import('./pages/Benchmark'))
 const Settings = lazy(() => import('./pages/Settings'))
 const HiddenServices = lazy(() => import('./pages/HiddenServices'))
+const Logs = lazy(() => import('./pages/Logs'))
 
 interface LayoutProps {
   role: Role
@@ -160,6 +161,7 @@ export default function App() {
           <Route path="changes" element={<Changes />} />
           <Route path="benchmark" element={<Benchmark />} />
           <Route path="hidden" element={isAdmin ? <HiddenServices /> : <Navigate to="/" replace />} />
+          <Route path="logs" element={isAdmin ? <Logs /> : <Navigate to="/" replace />} />
           <Route path="settings" element={isAdmin ? <Settings /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

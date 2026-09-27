@@ -13,7 +13,7 @@ class _Runner:
         self.status = ParseStatus(running=running)
         self.calls = 0
 
-    async def run_all(self):
+    async def run_all(self, **kwargs):
         self.calls += 1
 
 

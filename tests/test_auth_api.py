@@ -10,7 +10,7 @@ class _Runner:
     from app.parser_runner import ParseStatus
     status = ParseStatus()
 
-    async def run_all(self):
+    async def run_all(self, **kwargs):
         pass
 
 

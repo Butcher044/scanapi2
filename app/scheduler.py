@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.event_log import NULL_EVENTS, EventSink, describe_error
+
 if TYPE_CHECKING:
     from app.parser_runner import ParserRunner
 
@@ -33,8 +35,10 @@ def _trigger(hour: int, minute: int) -> CronTrigger:
 
 
 class Scheduler:
-    def __init__(self, runner: "ParserRunner", scheduler_time: str = DEFAULT_TIME):
+    def __init__(self, runner: "ParserRunner", scheduler_time: str = DEFAULT_TIME,
+                 *, events: EventSink = NULL_EVENTS):
         self._runner = runner
+        self._events = events
         self._scheduler = AsyncIOScheduler(timezone=TZ)
         try:
             hour, minute = parse_time(scheduler_time)
@@ -69,10 +73,14 @@ class Scheduler:
 
     async def _run(self) -> None:
         logger.info("Scheduled parse starting")
+        await self._events.record(
+            "info", "schedule", f"Сработал плановый запуск (ежедневно в {self.time} МСК)")
         try:
-            await self._runner.run_all()
+            await self._runner.run_all(trigger="schedule")
         except Exception as exc:
             logger.error("Scheduled parse error: %s", exc, exc_info=True)
+            await self._events.record(
+                "error", "schedule", "Плановый запуск парсинга завершился сбоем", describe_error(exc))
 
     def start(self) -> None:
         self._scheduler.start()

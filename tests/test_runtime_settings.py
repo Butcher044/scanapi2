@@ -104,3 +104,11 @@ def test_expiry_not_marked_when_there_is_no_notifier(db):
     db["proxies"] = [_proxy(1, "http://a:1", 1)]
     asyncio.run(rs.notify_expiring(FakePool(), None, NOW))
     assert db["notified"] == []
+
+
+def test_enabled_but_unusable_proxies_are_logged(db, events):
+    db["settings"] = {"proxy_enabled": "true"}
+    db["proxies"] = [_proxy(1, "http://a:1", -2)]
+    asyncio.run(rs.proxy_rotator(FakePool(), "10:00", NOW, events=events))
+    [e] = events.find("ни одного рабочего", "warning")
+    assert e.category == "proxy"

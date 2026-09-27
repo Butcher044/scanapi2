@@ -168,3 +168,29 @@ export interface HiddenMethod {
   request_example: unknown
   response_example: unknown
 }
+
+export type LogLevel = 'info' | 'success' | 'warning' | 'error'
+export type LogCategory = 'parser' | 'schedule' | 'telegram' | 'proxy' | 'settings' | 'system'
+
+/** One entry of the admin "Логи" journal; `time` is Moscow time, `date` is YYYY-MM-DD for grouping. */
+export interface LogEvent {
+  id: number
+  time: string
+  date: string
+  level: LogLevel
+  category: LogCategory
+  message: string
+  details: string | null
+}
+
+export interface LogsResponse {
+  events: LogEvent[]
+  has_more: boolean
+}
+
+export interface LogsQuery {
+  level?: LogLevel
+  category?: LogCategory
+  before?: number
+  limit?: number
+}

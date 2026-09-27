@@ -143,3 +143,67 @@ def test_no_sleep_after_the_last_attempt(env):
     env["subscribers"] = [1]
     asyncio.run(make_bot(FakeBot({1: [TimedOut()] * 3})).broadcast(["a"]))
     assert env["sleeps"] == [tb.BACKOFF_BASE, tb.BACKOFF_BASE * 2]
+
+
+# ── Event log ("Логи" tab) ────────────────────────────────────────────────────
+
+def test_broadcast_event_carries_the_message_text(env, events):
+    env["subscribers"] = [1, 2]
+    fake = FakeBot({1: [Forbidden("bot was blocked by the user")]})
+    asyncio.run(make_bot(fake, events=events).broadcast(["<b>Сбер</b> &amp; Ко", "часть 2"]))
+
+    [e] = events.find("Сводка отправлена в Telegram", "warning")
+    assert e.category == "telegram" and "1 из 2" in e.message
+    assert "Сбер & Ко" in e.details and "часть 2" in e.details and "<b>" not in e.details
+    assert "заблокировал" in e.details
+    assert events.find("отписан", "info")
+
+
+def test_fully_delivered_broadcast_is_success(env, events):
+    env["subscribers"] = [1]
+    asyncio.run(make_bot(FakeBot(), events=events).broadcast(["a"]))
+    [e] = events.find("Сводка отправлена в Telegram", "success")
+    assert "1 из 1" in e.message
+
+
+def test_nothing_delivered_is_an_error(env, events):
+    env["subscribers"] = [1]
+    asyncio.run(make_bot(FakeBot({1: [TimedOut()] * 3}), events=events).broadcast(["a"]))
+    [e] = events.find("не доставлена", "error")
+    assert "сеть" in e.details.lower()
+
+
+def test_broadcast_without_recipients_is_a_warning(env, events):
+    asyncio.run(make_bot(FakeBot(), events=events).broadcast(["a"]))
+    assert events.find("некому отправить", "warning")
+
+
+def test_admin_alert_events(env, events):
+    asyncio.run(make_bot(FakeBot(), admin_chat_id=42, events=events).send_admin("⚠️ <b>Сбер</b>"))
+    [ok] = events.find("администратору", "success")
+    assert ok.details == "⚠️ Сбер"
+
+    asyncio.run(make_bot(FakeBot(), events=events).send_admin("⚠️ x"))
+    assert events.find("TELEGRAM_ADMIN_CHAT", "warning")
+
+    asyncio.run(make_bot(FakeBot({42: [BadRequest("chat not found")]}), admin_chat_id=42,
+                         events=events).send_admin("⚠️ y"))
+    [err] = events.find("Не удалось отправить уведомление администратору", "error")
+    assert "chat not found" in err.details
+
+
+def test_subscribe_and_unsubscribe_are_logged(env, events, monkeypatch):
+    async def add_subscriber(conn, chat_id, username):
+        pass
+    monkeypatch.setattr(tb.repo, "add_subscriber", add_subscriber)
+
+    async def reply_text(text, **kwargs):
+        pass
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=reply_text),
+                             effective_chat=SimpleNamespace(id=7),
+                             effective_user=SimpleNamespace(username="ivan"))
+    bot = make_bot(FakeBot(), events=events)
+    asyncio.run(bot._cmd_start(update, None))
+    asyncio.run(bot._cmd_stop(update, None))
+    assert events.find("@ivan подписался", "info")
+    assert events.find("отписался", "info")

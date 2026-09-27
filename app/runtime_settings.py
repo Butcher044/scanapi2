@@ -9,6 +9,7 @@ from typing import Mapping, Optional, Protocol
 import asyncpg
 
 from app import notify_format, settings_repo
+from app.event_log import NULL_EVENTS, EventSink
 from app.proxies import expiring, usable_urls
 from app.scheduler import parse_time
 from bank_api_parser.proxy import ProxyRotator
@@ -45,7 +46,8 @@ async def load(pool: asyncpg.Pool, default_time: str) -> RuntimeSettings:
         return from_rows(await settings_repo.get_settings(conn), default_time)
 
 
-async def proxy_rotator(pool: asyncpg.Pool, default_time: str, now: datetime) -> Optional[ProxyRotator]:
+async def proxy_rotator(pool: asyncpg.Pool, default_time: str, now: datetime,
+                        *, events: EventSink = NULL_EVENTS) -> Optional[ProxyRotator]:
     """Rotator over the unexpired proxies, or None for a direct connection."""
     async with pool.acquire() as conn:
         settings = from_rows(await settings_repo.get_settings(conn), default_time)
@@ -54,6 +56,10 @@ async def proxy_rotator(pool: asyncpg.Pool, default_time: str, now: datetime) ->
         urls = usable_urls(await settings_repo.list_proxies(conn), now)
     if not urls:
         logger.warning("Proxies are enabled but none is usable: parsing directly")
+        await events.record(
+            "warning", "proxy",
+            "Прокси включены, но ни одного рабочего нет (список пуст или все просрочены) — "
+            "банки опрашиваются напрямую")
         return None
     logger.info("Parsing through %d proxies", len(urls))
     return ProxyRotator(urls)

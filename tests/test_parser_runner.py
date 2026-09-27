@@ -233,3 +233,107 @@ def test_proxy_source_failure_falls_back_to_direct(wire):
     runner = pr.ParserRunner(FakePool(), proxy_source=broken)
     asyncio.run(runner.run_all(("sber",)))
     assert runner.status.banks["sber"].status == "done" and proxy.active() is None
+
+
+# ── Event log ("Логи" tab) ────────────────────────────────────────────────────
+
+def test_events_trace_a_manual_run_bank_by_bank(wire, events):
+    wire({"tbank": ParserError("портал вернул 500"), "sber": SNAP})
+    runner = pr.ParserRunner(FakePool(), FakeNotifier(), events=events)
+    asyncio.run(runner.run_all(("tbank", "sber"), trigger="manual"))
+
+    [start] = events.find("Парсинг запущен")
+    assert start.category == "parser" and "вручную" in start.message
+    assert "Т-Банк" in start.message and "Сбер" in start.message
+    assert events.find("Сбер: начинаю сбор", "info")
+    [ok] = events.find("Сбер: готово", "success")
+    assert "1 сервис" in ok.message and "3 метода" in ok.message and "изменений: 1" in ok.message
+    [err] = events.find("Т-Банк: ошибка", "error")
+    assert "портал вернул 500" in err.details
+    [done] = events.find("Парсинг завершён", "warning")
+    assert "успешно 1 из 2" in done.message and "Т-Банк" in done.message
+
+
+def test_trigger_wording(wire, events):
+    wire({"sber": SNAP})
+    runner = pr.ParserRunner(FakePool(), events=events)
+    asyncio.run(runner.run_all(("sber",), trigger="schedule"))
+    asyncio.run(runner.run_all(("sber",), trigger="startup"))
+    starts = events.find("Парсинг запущен")
+    assert "по расписанию" in starts[0].message
+    assert "при запуске приложения" in starts[1].message
+    assert events.find("Парсинг завершён", "success")
+
+
+def test_unexpected_error_details_are_visible_to_the_admin(wire, events):
+    wire({"sber": KeyError("missing field")})
+    asyncio.run(pr.ParserRunner(FakePool(), events=events).run_all(("sber",)))
+    [err] = events.find("Сбер: ошибка", "error")
+    assert "KeyError" in err.details and "missing field" in err.details
+
+
+def test_rejected_snapshot_event_says_old_data_kept(wire, events):
+    wire({"tochka": SNAP}, imports={"tochka": SnapshotRejected("1 methods vs 66")})
+    asyncio.run(pr.ParserRunner(FakePool(), events=events).run_all(("tochka",)))
+    [err] = events.find("Точка: результат отклонён", "error")
+    assert "старые данные сохранены" in err.message and "1 methods vs 66" in err.details
+
+
+def test_skipped_concurrent_run_is_logged(wire, events):
+    wire({"sber": SNAP})
+    runner = pr.ParserRunner(FakePool(), events=events)
+
+    async def scenario():
+        await runner._lock.acquire()
+        try:
+            await runner.run_all(("sber",))
+        finally:
+            runner._lock.release()
+    asyncio.run(scenario())
+    assert events.find("уже идёт", "warning")
+
+
+def test_proxy_mode_is_logged(wire, events):
+    from bank_api_parser import proxy
+    wire({"sber": SNAP})
+
+    async def two():
+        return proxy.ProxyRotator(["http://a:1", "http://b:2"])
+    asyncio.run(pr.ParserRunner(FakePool(), events=events, proxy_source=two).run_all(("sber",)))
+    assert events.find("через 2 прокси")
+
+    async def broken():
+        raise RuntimeError("db down")
+    asyncio.run(pr.ParserRunner(FakePool(), events=events, proxy_source=broken).run_all(("sber",)))
+    [warn] = events.find("Не удалось загрузить список прокси", "warning")
+    assert warn.category == "proxy"
+
+
+def test_no_changes_is_explained(wire, events):
+    wire({"sber": SNAP}, imports={"sber": []})
+    asyncio.run(pr.ParserRunner(FakePool(), FakeNotifier(), events=events).run_all(("sber",)))
+    [e] = events.find("Изменений нет")
+    assert e.category == "telegram"
+
+
+def test_missing_telegram_is_explained(wire, events):
+    wire({"sber": SNAP})
+    asyncio.run(pr.ParserRunner(FakePool(), events=events).run_all(("sber",)))
+    assert events.find("Telegram не настроен")
+
+
+def test_notifier_crash_is_an_error_event(wire, events):
+    wire({"sber": SNAP})
+    asyncio.run(pr.ParserRunner(FakePool(), FakeNotifier(fail=True), events=events).run_all(("sber",)))
+    [e] = events.find("Не удалось отправить", "error")
+    assert e.category == "telegram" and "telegram down" in e.details
+
+
+def test_digest_build_failure_is_an_error_event(wire, events, monkeypatch):
+    def boom(*a, **kw):
+        raise ValueError("formatter bug")
+    monkeypatch.setattr(pr.notify_format, "build_digest", boom)
+    wire({"sber": SNAP})
+    asyncio.run(pr.ParserRunner(FakePool(), FakeNotifier(), events=events).run_all(("sber",)))
+    [e] = events.find("Не удалось собрать сводку", "error")
+    assert "formatter bug" in e.details

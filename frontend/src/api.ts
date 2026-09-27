@@ -1,7 +1,7 @@
 import type {
   Summary, ChangesResponse, Service, Method, ParseStatus, StartParseResult,
   Role, AppSettings, SettingsPatch, Proxy, NewProxy, Benchmark,
-  HiddenSummary, HiddenService, HiddenMethod,
+  HiddenSummary, HiddenService, HiddenMethod, LogsQuery, LogsResponse,
 } from './types'
 
 /** Fired when any API call (except the auth endpoints) gets 401: the session is gone. */
@@ -110,6 +110,16 @@ export const api = {
   /** present: null puts the cell back to automatic matching. */
   setBenchmarkOverride: (capability: string, bank: string, present: boolean | null): Promise<Benchmark> =>
     send('PUT', '/api/benchmark/overrides', { capability, bank, present }),
+
+  // Admin-only: the human-readable event journal ("Логи" tab), newest first.
+  logs: (params: LogsQuery = {}): Promise<LogsResponse> => {
+    const q = new URLSearchParams()
+    if (params.level) q.set('level', params.level)
+    if (params.category) q.set('category', params.category)
+    if (params.before != null) q.set('before', String(params.before))
+    if (params.limit != null) q.set('limit', String(params.limit))
+    return get(`/api/logs?${q}`)
+  },
 
   // Admin-only: services/methods kept in the DB but not shown on the public dashboard.
   hiddenSummary: (): Promise<HiddenSummary> =>

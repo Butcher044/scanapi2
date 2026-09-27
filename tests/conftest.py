@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app.auth import Auth, LoginLimiter
+from app.event_log import CATEGORIES, LEVELS, Event
 from app.web_auth import COOKIE
 
 PASSWORDS = {"admin": "admin-pass", "team": "team-pass"}
@@ -36,3 +37,24 @@ def make_client(monkeypatch):
             client.cookies.set(COOKIE, auth.issue(role))
         return client
     return factory
+
+
+class RecordingEvents:
+    """In-memory event sink: what a component wrote to the admin's "Логи" tab."""
+
+    def __init__(self):
+        self.events: list[Event] = []
+
+    async def record(self, level, category, message, details=None):
+        assert level in LEVELS, level
+        assert category in CATEGORIES, category
+        self.events.append(Event(level, category, message, details))
+
+    def find(self, text, level=None):
+        """Events whose message contains `text` (and match `level` when given)."""
+        return [e for e in self.events if text in e.message and (level is None or e.level == level)]
+
+
+@pytest.fixture
+def events():
+    return RecordingEvents()

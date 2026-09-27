@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import database, proxies, runtime_settings, settings_repo
+from app.event_log import NULL_EVENTS, EventSink
 from app.runtime_settings import RuntimeSettings
 from app.scheduler import Scheduler, parse_time
 from app.web_auth import require_admin
@@ -31,6 +32,15 @@ def _scheduler(request: Request) -> Scheduler:
     if scheduler is None:
         raise HTTPException(status_code=503, detail="Scheduler not ready")
     return scheduler
+
+
+def _events(request: Request) -> EventSink:
+    return getattr(request.app.state, "events", None) or NULL_EVENTS
+
+
+def _proxy_name(row: Mapping) -> str:
+    """How a proxy is named in the journal: its label, else the URL without the password."""
+    return f"«{row['label']}» ({mask(row['url'])})" if row["label"] else mask(row["url"])
 
 
 def _msk(dt: Optional[datetime], fmt: str) -> Optional[str]:
@@ -77,8 +87,18 @@ async def put_settings(patch: SettingsPatch, request: Request) -> dict:
     )
     async with pool.acquire() as conn:
         await settings_repo.put_settings(conn, runtime_settings.to_rows(updated))
+    events = _events(request)
     if updated.scheduler_time != scheduler.time:
+        previous = scheduler.time
         scheduler.reschedule(updated.scheduler_time)
+        await events.record(
+            "info", "settings",
+            f"Время ежедневного парсинга изменено с {previous} на {updated.scheduler_time} МСК")
+    if updated.proxy_enabled != current.proxy_enabled:
+        await events.record(
+            "info", "settings",
+            "Прокси для парсинга включены" if updated.proxy_enabled
+            else "Прокси для парсинга выключены — банки опрашиваются напрямую")
     return _settings_view(updated, scheduler)
 
 
@@ -143,7 +163,7 @@ async def list_proxies() -> dict:
 
 
 @router.post("/proxies", status_code=201)
-async def add_proxy(body: ProxyIn) -> dict:
+async def add_proxy(body: ProxyIn, request: Request) -> dict:
     now = _now()
     try:
         async with database.get_pool().acquire() as conn:
@@ -152,14 +172,19 @@ async def add_proxy(body: ProxyIn) -> dict:
         raise HTTPException(status_code=422, detail=f"не больше {exc.limit} прокси") from exc
     if row is None:
         raise HTTPException(status_code=409, detail="такой прокси уже есть в списке")
+    await _events(request).record(
+        "info", "proxy",
+        f"Добавлен прокси {_proxy_name(row)}, действует до {_msk(row['expires_at'], '%d.%m.%Y')}")
     return _proxy_view(row, now)
 
 
 @router.delete("/proxies/{proxy_id}", status_code=204)
-async def delete_proxy(proxy_id: int) -> Response:
+async def delete_proxy(proxy_id: int, request: Request) -> Response:
     async with database.get_pool().acquire() as conn:
-        if not await settings_repo.delete_proxy(conn, proxy_id):
+        row = await settings_repo.get_proxy(conn, proxy_id)
+        if row is None or not await settings_repo.delete_proxy(conn, proxy_id):
             raise HTTPException(status_code=404, detail="прокси не найден")
+    await _events(request).record("info", "proxy", f"Удалён прокси {_proxy_name(row)}")
     return Response(status_code=204)
 
 
@@ -176,7 +201,7 @@ async def _check_and_save(row: Mapping, limit: asyncio.Semaphore) -> Optional[di
 
 
 @router.post("/proxies/check")
-async def check_all() -> dict:
+async def check_all(request: Request) -> dict:
     async with database.get_pool().acquire() as conn:
         rows = await settings_repo.list_proxies(conn)
     limit = asyncio.Semaphore(CHECK_CONCURRENCY)
@@ -184,8 +209,23 @@ async def check_all() -> dict:
     for row, outcome in zip(rows, checked):
         if isinstance(outcome, BaseException):
             logger.error("Saving check result failed for proxy id=%s: %r", row["id"], outcome)
+    saved = [r for r in checked if isinstance(r, dict)]
+    await _record_check_summary(_events(request), saved)
     now = _now()
-    return {"proxies": [_proxy_view(r, now) for r in checked if isinstance(r, dict)]}
+    return {"proxies": [_proxy_view(r, now) for r in saved]}
+
+
+async def _record_check_summary(events: EventSink, rows: list[dict]) -> None:
+    if not rows:
+        return
+    bad = [r for r in rows if not r["last_ok"]]
+    message = f"Проверка прокси: работают {len(rows) - len(bad)} из {len(rows)}"
+    if not bad:
+        await events.record("success", "proxy", message)
+        return
+    details = "\n".join(f"{_proxy_name(r)}: {r['last_error'] or 'не отвечает'}" for r in bad)
+    level = "error" if len(bad) == len(rows) else "warning"
+    await events.record(level, "proxy", message, details)
 
 
 @router.post("/proxies/{proxy_id}/check")

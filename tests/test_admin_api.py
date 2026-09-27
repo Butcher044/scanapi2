@@ -12,7 +12,7 @@ URL = "socks5://user:SECRET@1.2.3.4:1080"
 
 
 class _Runner:
-    async def run_all(self):
+    async def run_all(self, **kwargs):
         pass
 
 
@@ -66,9 +66,10 @@ def db(monkeypatch):
 
 
 @pytest.fixture
-def admin(make_client, db, monkeypatch):
+def admin(make_client, db, monkeypatch, events):
     sched = Scheduler(_Runner(), "10:00")
     monkeypatch.setattr(main.app.state, "scheduler", sched, raising=False)
+    monkeypatch.setattr(main.app.state, "events", events, raising=False)
     monkeypatch.setattr(main.app.state, "default_time", "10:00", raising=False)
     return make_client("admin")
 
@@ -178,3 +179,36 @@ def test_add_proxy_respects_the_limit(admin, monkeypatch):
     assert admin.post("/api/proxies", json={"url": "http://a:1"}).status_code == 201
     resp = admin.post("/api/proxies", json={"url": "http://b:2"})
     assert resp.status_code == 422 and "1" in resp.json()["detail"]
+
+
+# ── Event log ("Логи" tab) ────────────────────────────────────────────────────
+
+def test_settings_changes_are_logged(admin, events):
+    admin.put("/api/settings", json={"scheduler_time": "18:45", "proxy_enabled": True})
+    [t] = events.find("Время ежедневного парсинга изменено")
+    assert t.category == "settings" and "с 10:00 на 18:45" in t.message
+    assert events.find("Прокси для парсинга включены")
+
+    events.events.clear()
+    admin.put("/api/settings", json={"scheduler_time": "18:45"})   # nothing actually changed
+    assert events.events == []
+
+
+def test_proxy_crud_is_logged_without_the_password(admin, events):
+    pid = admin.post("/api/proxies", json={"url": URL, "label": "МСК-1"}).json()["id"]
+    admin.delete(f"/api/proxies/{pid}")
+    [added] = events.find("Добавлен прокси")
+    [removed] = events.find("Удалён прокси")
+    assert "МСК-1" in added.message and added.category == "proxy"
+    assert all("SECRET" not in (e.message + (e.details or "")) for e in events.events)
+    assert "МСК-1" in removed.message
+
+
+def test_check_all_is_summarised(admin, events, monkeypatch):
+    monkeypatch.setattr(admin_api.proxies, "check",
+                        lambda url: CheckResult(ok=url.endswith(":1"), error=None if url.endswith(":1") else "таймаут"))
+    admin.post("/api/proxies", json={"url": "http://a:1"})
+    admin.post("/api/proxies", json={"url": "http://b:2"})
+    admin.post("/api/proxies/check")
+    [e] = events.find("Проверка прокси", "warning")
+    assert "работают 1 из 2" in e.message and "таймаут" in e.details

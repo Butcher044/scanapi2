@@ -30,7 +30,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import config as cfg_module
-from app import admin_api, benchmark_api, database, hidden_api, repository as repo, runtime_settings, web_auth
+from app import (admin_api, benchmark_api, database, event_log, hidden_api, logs_api,
+                 repository as repo, runtime_settings, web_auth)
 from app.auth import Auth, LoginLimiter
 from app.banks import BANK_KEYS, bank_label
 from app.parser_runner import ParserRunner
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 settings = cfg_module.load()
 
 PROXY_EXPIRY_CHECK_TIME = "09:00"   # MSK, daily admin reminder about expiring proxies
+LOG_CLEANUP_TIME = "04:00"          # MSK, daily removal of journal entries older than KEEP_DAYS
 
 
 def _build_auth() -> Auth:
@@ -71,7 +73,14 @@ _tasks: set[asyncio.Task] = set()
 def _on_task_done(task: asyncio.Task) -> None:
     _tasks.discard(task)
     if not task.cancelled() and task.exception() is not None:
-        logger.error("Background task %s failed", task.get_name(), exc_info=task.exception())
+        exc = task.exception()
+        logger.error("Background task %s failed", task.get_name(), exc_info=exc)
+        coro = app.state.events.record(
+            "error", "system", "Фоновая задача завершилась сбоем", event_log.describe_error(exc))
+        try:
+            _spawn(coro)
+        except RuntimeError:   # no running loop (shutdown): the server log above is enough
+            coro.close()
 
 
 def _spawn(coro) -> None:
@@ -94,6 +103,8 @@ async def lifespan(app: FastAPI):
     pool = await database.create_pool(settings.db_dsn)
     await database.run_migrations(pool, settings.migrations_dir)
     logger.info("DB migrations OK")
+    events = event_log.EventLog(pool)
+    app.state.events = events
 
     if settings.telegram_bot_token:
         _bot = TelegramBot(
@@ -101,11 +112,14 @@ async def lifespan(app: FastAPI):
             fixed_chat_id=settings.telegram_chat_id,
             admin_chat_id=settings.telegram_admin_chat,
             status_provider=lambda: _runner.status if _runner else None,
+            events=events,
         )
         _spawn(_bot.start())
         logger.info("Telegram bot started")
     else:
         logger.info("Telegram bot disabled (no token)")
+        await events.record("warning", "telegram",
+                            "Telegram-бот отключён: не задан TELEGRAM_BOT_TOKEN")
 
     _runner = ParserRunner(
         pool,
@@ -114,16 +128,21 @@ async def lifespan(app: FastAPI):
         snapshots_keep=settings.snapshots_keep,
         dashboard_url=settings.dashboard_url,
         proxy_source=lambda: runtime_settings.proxy_rotator(
-            pool, settings.scheduler_time, datetime.now(timezone.utc)),
+            pool, settings.scheduler_time, datetime.now(timezone.utc), events=events),
+        events=events,
     )
     if settings.telegram_notify and not _bot:
         logger.warning("TELEGRAM_NOTIFY=true but TELEGRAM_BOT_TOKEN is empty: nothing will be sent")
     if settings.telegram_notify and _bot and settings.telegram_admin_chat is None:
         logger.warning("TELEGRAM_ADMIN_CHAT is not set: parse failure alerts will only be logged")
+    if _bot and not settings.telegram_notify:
+        await events.record("warning", "telegram",
+                            "Рассылка в Telegram выключена (TELEGRAM_NOTIFY=false): бот отвечает на команды, "
+                            "но сводки и уведомления не отправляет")
     logger.info("Telegram notifications %s", "enabled" if settings.telegram_notify and _bot else "disabled")
 
     stored = await runtime_settings.load(pool, settings.scheduler_time)
-    _scheduler = Scheduler(_runner, stored.scheduler_time)
+    _scheduler = Scheduler(_runner, stored.scheduler_time, events=events)
 
     async def _proxy_expiry_job() -> None:   # APScheduler needs a real coroutine function
         try:
@@ -131,18 +150,32 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Proxy expiry check failed")
 
+    async def _log_cleanup_job() -> None:
+        try:
+            async with pool.acquire() as conn:
+                removed = await event_log.prune(conn, event_log.KEEP_DAYS)
+            logger.info("Event log cleanup: %d rows removed", removed)
+        except Exception:
+            logger.exception("Event log cleanup failed")
+
     _scheduler.add_daily("proxy_expiry", _proxy_expiry_job, PROXY_EXPIRY_CHECK_TIME)
+    _scheduler.add_daily("log_cleanup", _log_cleanup_job, LOG_CLEANUP_TIME)
     _scheduler.start()
     app.state.scheduler = _scheduler
+    await events.record(
+        "success", "system",
+        f"Приложение запущено. Следующий плановый парсинг: {_fmt_next(_scheduler.next_run())} МСК",
+    )
 
     # Immediate parse if env var set
     if os.environ.get("RUN_NOW", "").lower() in ("1", "true", "yes"):
         logger.info("RUN_NOW=true — running parse immediately")
-        _spawn(_runner.run_all())
+        _spawn(_runner.run_all(trigger="startup"))
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    await events.record("info", "system", "Приложение останавливается")
     if _scheduler:
         _scheduler.stop()
     if _bot:
@@ -162,10 +195,12 @@ app.state.auth = _build_auth()
 app.state.limiter = LoginLimiter()
 app.state.default_time = settings.scheduler_time
 app.state.scheduler = None
+app.state.events = event_log.NULL_EVENTS   # replaced by the DB-backed journal in lifespan
 app.include_router(web_auth.router)
 app.include_router(admin_api.router)
 app.include_router(benchmark_api.router)
 app.include_router(hidden_api.router)
+app.include_router(logs_api.router)
 # Registered before _security_headers, so it runs inside it: 401s get the headers too.
 app.middleware("http")(web_auth.auth_middleware)
 
@@ -202,6 +237,10 @@ MSK = ZoneInfo("Europe/Moscow")
 
 def _fmt_msk(dt: Optional[datetime]) -> str:
     return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M") if dt else "—"
+
+
+def _fmt_next(dt: Optional[datetime]) -> str:
+    return dt.astimezone(MSK).strftime("%d.%m.%Y в %H:%M") if dt else "не запланирован"
 
 
 def _pool():
@@ -306,7 +345,7 @@ async def api_parse_now():
         raise HTTPException(status_code=503, detail="Runner not ready")
     if _runner.status.running:
         return {"status": "already_running", "banks": list(BANK_KEYS)}
-    _spawn(_runner.run_all())
+    _spawn(_runner.run_all(trigger="manual"))
     return {"status": "started", "banks": list(BANK_KEYS)}
 
 
