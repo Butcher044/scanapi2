@@ -55,6 +55,17 @@
   /* Focus ring */
   --c-ring: 239 49 36;
 
+  /* Log console — a terminal stays dark in both themes, so these are defined
+     once here and never overridden. Every text step clears 4.5:1 on the bg. */
+  --c-console: 18 18 20;
+  --c-console-line: 44 44 50;
+  --c-console-ink: 224 224 230;
+  --c-console-dim: 138 140 148;
+  --c-console-ok: 74 222 128;
+  --c-console-warn: 250 204 21;
+  --c-console-err: 248 113 113;
+  --c-console-info: 125 177 250;
+
   /* Categorical series — each bank's own brand color, identical in both themes
      so a bank never changes color when the theme is toggled.
 

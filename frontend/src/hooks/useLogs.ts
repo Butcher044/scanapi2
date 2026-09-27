@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorText } from '../api'
-import type { LogCategory, LogEvent, LogLevel } from '../types'
+import type { LogEvent } from '../types'
 
 const PAGE_SIZE = 100
 export const REFRESH_MS = 10_000
-
-export interface LogFilters {
-  level: LogLevel | null
-  category: LogCategory | null
-}
 
 /**
  * Newest page on top of what is already loaded: keeps "Показать ещё" pages intact.
@@ -25,12 +20,11 @@ function mergeFresh(fresh: LogEvent[], current: LogEvent[]): { events: LogEvent[
 }
 
 /**
- * Data layer of the admin "Логи" tab: first page per filter, silent polling
- * for new events while the tab is visible, and older pages on demand.
- * A response for an outdated filter is dropped (the generation counter).
+ * Data layer of the admin "Логи" console: first page, silent polling for new
+ * events while the tab is visible, and older pages on demand. Responses that
+ * arrive after unmount are dropped (the generation counter).
  */
-export function useLogs(filters: LogFilters) {
-  const { level, category } = filters
+export function useLogs() {
   const [events, setEvents] = useState<LogEvent[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -39,14 +33,9 @@ export function useLogs(filters: LogFilters) {
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null)
   const generation = useRef(0)
 
-  const query = useCallback(
-    (before?: number) => api.logs({
-      level: level ?? undefined, category: category ?? undefined, before, limit: PAGE_SIZE,
-    }),
-    [level, category],
-  )
+  const query = useCallback((before?: number) => api.logs({ before, limit: PAGE_SIZE }), [])
 
-  // First page whenever the filter changes
+  // First page
   useEffect(() => {
     const gen = ++generation.current
     setLoading(true)

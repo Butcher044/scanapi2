@@ -11,6 +11,16 @@ export default {
     extend: {
       colors: {
         page: token('page'),
+        console: {
+          DEFAULT: token('console'),
+          line: token('console-line'),
+          ink: token('console-ink'),
+          dim: token('console-dim'),
+          ok: token('console-ok'),
+          warn: token('console-warn'),
+          err: token('console-err'),
+          info: token('console-info'),
+        },
         surface: token('surface'),
         raised: token('raised'),
         line: {
