@@ -1,53 +1,57 @@
-import { memo, useId, useState, type ReactNode } from 'react'
+import { memo, useId, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import type { LogEvent } from '../../types'
 import { LEVELS, shortTime } from './logMeta'
 
-function Line({ event, marker }: { event: LogEvent; marker: ReactNode }) {
-  const level = LEVELS[event.level] ?? LEVELS.info
-  return (
-    <>
-      <time className="shrink-0 text-console-dim" title={`${event.time} МСК`}>{shortTime(event.time)}</time>
-      <span className={`w-[8ch] shrink-0 font-semibold ${level.tagClass}`}>{level.tag}</span>
-      <span className="min-w-0 flex-1 break-words text-console-ink max-sm:basis-full">
-        {event.message}
-        {marker}
-      </span>
-    </>
-  )
-}
-
-const ROW = 'flex w-full flex-wrap items-start gap-x-3 px-4 py-0.5 text-left'
-
-/** One console line; a line with details is a button that unfolds them below. */
+/** One log line: time, level badge, message; details unfold below on demand. */
 function LogRow({ event }: { event: LogEvent }) {
   const [open, setOpen] = useState(false)
   const detailsId = useId()
-
-  if (!event.details) {
-    return <li className={ROW}><Line event={event} marker={null} /></li>
-  }
+  const level = LEVELS[event.level] ?? LEVELS.info
 
   return (
-    <li>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        aria-controls={detailsId}
-        className={`${ROW} hover:bg-console-line/60 focus-visible:bg-console-line/60 focus-visible:outline-none`}
-      >
-        <Line
-          event={event}
-          marker={<span className="ml-2 text-console-dim">{open ? '[скрыть]' : '[подробнее]'}</span>}
-        />
-      </button>
-      <pre
-        id={detailsId}
-        hidden={!open}
-        className="mb-1 ml-4 mr-4 whitespace-pre-wrap break-words border-l-2 border-console-line py-1 pl-3 text-console-dim sm:ml-[calc(1rem+22ch+1.5rem)]"
-      >
-        {event.details}
-      </pre>
+    <li className="border-b border-line/70 px-4 py-2.5 last:border-0 hover:bg-raised transition-colors">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+        <time
+          className="w-[7.5rem] shrink-0 pt-px font-mono text-[11px] tabular-nums leading-5 text-ink-faint"
+          title={`${event.time} МСК`}
+        >
+          {shortTime(event.time)}
+        </time>
+        <span
+          className={`inline-flex w-[4.75rem] shrink-0 justify-center rounded-md border py-0.5 text-[10px] font-semibold uppercase tracking-wide ${level.badgeClass}`}
+        >
+          {level.label}
+        </span>
+        <p className="min-w-0 flex-1 break-words text-[13px] leading-5 text-ink max-sm:basis-full">
+          {event.message}
+        </p>
+        {event.details && (
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="press ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-xs leading-5 text-ink-muted hover:text-ink transition-colors"
+          >
+            {open ? 'Скрыть' : 'Подробнее'}
+            <ChevronDown
+              size={12}
+              aria-hidden="true"
+              className={`transition-transform duration-200 ease-out ${open ? 'rotate-180' : ''}`}
+            />
+          </button>
+        )}
+      </div>
+      {event.details && (
+        <pre
+          id={detailsId}
+          hidden={!open}
+          className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-page p-3 font-mono text-xs leading-relaxed text-ink-muted sm:ml-[calc(7.5rem+4.75rem+1.5rem)]"
+        >
+          {event.details}
+        </pre>
+      )}
     </li>
   )
 }

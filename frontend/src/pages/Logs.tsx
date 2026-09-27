@@ -6,9 +6,9 @@ import LogRow from '../components/logs/LogRow'
 /** How close to the bottom still counts as "following" new lines, px */
 const STICK_THRESHOLD = 24
 
-function ConsoleNote({ tone = 'dim', children }: { tone?: 'dim' | 'err'; children: string }) {
+function Note({ tone = 'muted', children }: { tone?: 'muted' | 'danger'; children: string }) {
   return (
-    <p className={`px-4 py-0.5 ${tone === 'err' ? 'text-console-err' : 'text-console-dim'}`}>{children}</p>
+    <p className={`px-4 py-3 text-sm ${tone === 'danger' ? 'text-danger' : 'text-ink-faint'}`}>{children}</p>
   )
 }
 
@@ -75,31 +75,31 @@ export default function Logs() {
         onScroll={onScroll}
         role="log"
         aria-label="Журнал событий"
-        className="h-[70vh] min-h-80 overflow-y-auto rounded-2xl border border-console-line bg-console py-3 font-mono text-xs leading-relaxed shadow-card"
+        className="h-[70vh] min-h-80 overflow-y-auto rounded-2xl border border-line bg-surface shadow-card"
       >
         {hasMore && (
           <button
             type="button"
             onClick={onLoadMore}
             disabled={loadingMore}
-            className="press mx-4 mb-2 text-console-info hover:underline disabled:opacity-60"
+            className="flex w-full items-center justify-center border-b border-line/70 py-2.5 text-xs text-ink-muted hover:bg-raised hover:text-ink transition-colors disabled:opacity-60"
           >
-            {loadingMore ? 'загрузка…' : '↑ показать более ранние записи'}
+            {loadingMore ? 'Загрузка…' : 'Показать более ранние записи'}
           </button>
         )}
-        {loadMoreError && <ConsoleNote tone="err">{loadMoreError}</ConsoleNote>}
+        {loadMoreError && <Note tone="danger">{loadMoreError}</Note>}
 
         {loading ? (
-          <ConsoleNote>загрузка…</ConsoleNote>
+          <Note>Загрузка…</Note>
         ) : lines.length === 0 && !error ? (
-          <ConsoleNote>Пока пусто — записи появятся после первого запуска парсинга</ConsoleNote>
+          <Note>Пока пусто — записи появятся после первого запуска парсинга</Note>
         ) : (
           <ul>
             {lines.map(event => <LogRow key={event.id} event={event} />)}
           </ul>
         )}
 
-        {error && <ConsoleNote tone="err">{error}</ConsoleNote>}
+        {error && <Note tone="danger">{error}</Note>}
       </div>
     </div>
   )
